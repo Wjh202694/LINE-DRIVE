@@ -29,14 +29,18 @@ function resize() {
   }
 }
 
-// —— 持久化 ——
+// —— 持久化（隐私模式/受限环境 localStorage 会抛异常，降级为内存存储，不能阻断启动）——
+const store = (() => {
+  try { const t = '__ldtest'; localStorage.setItem(t, '1'); localStorage.removeItem(t); return localStorage; }
+  catch { return null; }
+})();
 const LS = {
-  get best() { return +localStorage.getItem('linedrive.best') || 0; },
-  set best(v) { localStorage.setItem('linedrive.best', v); },
-  get bestKm() { return +localStorage.getItem('linedrive.bestKm') || 0; },
-  set bestKm(v) { localStorage.setItem('linedrive.bestKm', v); },
-  get runs() { return +localStorage.getItem('linedrive.runs') || 0; },
-  set runs(v) { localStorage.setItem('linedrive.runs', v); },
+  get best() { return store ? +store.getItem('linedrive.best') || 0 : 0; },
+  set best(v) { if (store) store.setItem('linedrive.best', v); },
+  get bestKm() { return store ? +store.getItem('linedrive.bestKm') || 0 : 0; },
+  set bestKm(v) { if (store) store.setItem('linedrive.bestKm', v); },
+  get runs() { return store ? +store.getItem('linedrive.runs') || 0 : 0; },
+  set runs(v) { if (store) store.setItem('linedrive.runs', v); },
 };
 
 // —— 游戏对象 ——
