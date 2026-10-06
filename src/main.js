@@ -394,7 +394,13 @@ function tickOnce(dt) {
 function loop(t) {
   const dt = clamp((t - lastT) / 1000, 0.001, 0.05);
   lastT = t;
-  tickOnce(dt);
+  try {
+    tickOnce(dt);
+  } catch (e) {
+    // 任何单帧异常都不能静默打断 rAF 链（曾导致主循环死亡、标题动画停播）
+    window.__LDerr = String(e && e.stack || e).slice(0, 400);
+    if (!window.__LDerrSeen) { window.__LDerrSeen = true; console.error('[LD] frame error:', e); }
+  }
   requestAnimationFrame(loop);
 }
 

@@ -294,8 +294,8 @@ const SIGN = {
   ],
 };
 
-// —— 主车位图 def（直接套用视频建模）：trimInk 裁边后映射到车宽 1.94m ——
-const PLAYER_BM = { bitmap: true, w: 1.94, h: 1.33, ax: 0, url: playerCarUrl };
+// —— 主车位图 def（直接套用视频建模）：就绪前回退矢量版 playerVec ——
+const PLAYER_BM = { bitmap: true, w: 1.94, h: 1.33, ax: 0, fallback: 'playerVec' };
 
 export const DEFS = {
   player: PLAYER_BM, playerVec: PLAYER, sedan: SEDAN, truck: TRUCK, bus: BUS,
@@ -419,6 +419,10 @@ function getSprite(key, tier) {
     const def = DEFS[key];
     if (!def) return getSprite('playerVec', tier);
     if (def.bitmap) {
+      if (!def.img) {
+        // 位图未就绪：有矢量兜底则用兜底，否则本帧跳过绘制（绝不能让 drawImage 吃到 undefined）
+        return def.fallback ? getSprite(def.fallback, tier) : null;
+      }
       cv = buildBitmapTier(def, TIERS[tier]);
     } else {
       cv = renderDef(def, TIERS[tier], MINLW[tier]);
@@ -431,6 +435,7 @@ function getSprite(key, tier) {
 export function drawSprite(ctx, key, x, yBase, ppm, alpha = 1, flip = false) {
   if (alpha <= 0.02 || ppm < 1.2) return;
   const def = DEFS[key];
+  if (!def) return;                            // 位图尚未注册完成：本帧跳过（首帧常见，勿抛）
   const w = (def.w + MARGIN * 2) * ppm;      // 尺寸连续（取整会造成步进"抽帧感"）
   const h = (def.h + MARGIN) * ppm;
   if (w < 1.5 || h < 1.5) return;
@@ -445,6 +450,7 @@ export function drawSprite(ctx, key, x, yBase, ppm, alpha = 1, flip = false) {
   const drawOne = (tier, a) => {
     if (a <= 0.02) return;
     const cv = getSprite(key, tier);
+    if (!cv) return;                            // 位图未就绪且无兜底：跳过本帧
     ctx.globalAlpha = a;
     if (flip) {
       ctx.save(); ctx.translate(x, yBase); ctx.scale(-1, 1);
