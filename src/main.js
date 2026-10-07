@@ -7,7 +7,7 @@ import { setTrack, getTrack, wrapZ, segIndexAt, segAt } from './road.js';
 import { createPlayer, updatePlayer } from './car.js';
 import { Traffic } from './traffic.js';
 import { renderWorld } from './render.js';
-import { drawHUD, drawTitle, drawCrash, drawPause, drawSteer } from './ui.js';
+import { drawHUD, drawTitle, drawCrash, drawPause, drawJunction } from './ui.js';
 import { initInput, input, consumeActions } from './input.js';
 import { clearFx, updateFx, updateShake, addShake, burstSparks, shatter } from './fx.js';
 import { updatePalette, setTheme, consumeSpriteRebuild, THEME_ORDER, THEMES, PAL } from './palette.js';
@@ -82,7 +82,7 @@ function beginRun() {
   p.invuln = 1.0;
   if (game.state === 'crashed') p.speed = CFG.maxSpeed * 0.5;
   // 重开位置若落在弯道禁行窗内（转向区内撞毁的情形），退到弯前 120m，避免秒判负死循环
-  const cw = getTrack().curveWindowAt(playerZabs());
+  const jw = getTrack().junctionWindowAt(playerZabs());
   if (cw) {
     game.cam.z = wrapZ(cw.waitZ - 120);
     p.speed = CFG.maxSpeed * 0.5;
@@ -94,7 +94,7 @@ function beginRun() {
   game.dist = 0; game.score = 0; game.combo = 0; game.maxCombo = 0;
   game.overtakes = 0; game.peak = p.speed; game.newBest = false;
   game.impacts = 0; game.failReason = null;
-  game.steer = { phase: 'none', curve: null, selected: false, chosen: 0, progress: 0, startX: 0, graceT: 0, trav: 0 };
+  game.jn = null;
   game.lastLanes = getTrack().roadInfoAt(playerZabs()).lanes;
   game.startZ = wrapZ(game.cam.z + 260);
   game.introT = 0.8;
@@ -137,90 +137,41 @@ function doCrash(car, reason) {
   addShake(flat ? 10 : 14);
 }
 
-// —— 转向状态机（§10.4）：待转区选定 → 转向区按住位移 → 成功/撞栏 ——
-// 岔路（freeDir）允许左右任选，选定后动态写入弯道方向
-function updateSteer(dt, laneL, laneR) {
-  const p = game.player;
+// —— 路口状态机（§10.4 修订版：车道选向）——
+// 待转区内「变道即选向」：每个出口对应专用车道，车道定位实时预览弯道方向；
+// 过了待转区车道锁定，随弯道行驶；单出口路口任意车道直接通过，无需选择。
+function updateJunction() {
   const track = getTrack();
-  const ri = track.roadInfoAt(playerZabs());
-  const cw = track.curveWindowAt(playerZabs());
-
-  if (!cw) {
-    if (game.steer.phase === 'active') {
-      // 驶出转向区：按住整段（未触发任何失败）= 成功，fov 呼吸 + 回吸车道
-      if (game.steer.selected) {
-        game.fovBreathT = 0.6;
-        p.lane = clamp(Math.round((p.x + ri.half) / (ri.half * 2 / ri.lanes)), 0, ri.lanes - 1);
-        p.drift = 0;
-      }
-    }
-    game.steer.phase = 'none';
-    game.steer.selected = false;
-    return null;
-  }
-
-  if (playerZabs() < cw.startZ) {
-    // —— 待转区 ——
-    if (game.steer.phase !== 'wait' || game.steer.curve !== cw) {
-      game.steer.phase = 'wait';
-      game.steer.curve = cw;
-      game.steer.selected = false;
-      game.steer.chosen = 0;
-      game.steer.progress = 0;
-    }
-    if (cw.freeDir) {
-      if (laneL) { game.steer.selected = true; game.steer.chosen = -1; track.setForkCurve(cw, -1); }
-      if (laneR) { game.steer.selected = true; game.steer.chosen = 1; track.setForkCurve(cw, 1); }
-      // 标题演示：AI 随机选向
-      if (game.state === 'title' && !game.steer.chosen) {
-        const d = Math.random() < 0.5 ? -1 : 1;
-        game.steer.chosen = d;
-        track.setForkCurve(cw, d);
-      }
-    } else {
-      if ((laneL && cw.dir < 0) || (laneR && cw.dir > 0)) game.steer.selected = true;
-      if (game.state === 'title') game.steer.selected = true;
-    }
+  const jw = track.junctionWindowAt(playerZabs());
+  if (!jw) { game.jn = null; return; }
+  const { j } = jw;
+  const exit = track.exitForLane(j, game.player.lane);
+  if (playerZabs() < j.bendZ) {
+    track.setJunctionDir(j, exit.dir);            // 待转区内变道 = 实时改弯道方向
+    game.jn = { j, phase: 'wait', exit };
   } else {
-    // —— 转向区：按住整段 = 成功；松手/按反/撞栏 = 立即失败 ——
-    if (game.steer.phase !== 'active' || game.steer.curve !== cw) {
-      game.steer.phase = 'active';
-      game.steer.curve = cw;
-      game.steer.startX = p.x;
-      game.steer.graceT = CFG.steerGrace;
-      game.steer.trav = 0;
-      game.steer.progress = 0;
-    }
-    game.steer.graceT -= dt;
-    game.steer.trav += p.speed * dt;
-    game.steer.progress = clamp(game.steer.trav / CFG.steerZoneLen, 0, 1);
-    const chosen = cw.freeDir ? (game.steer.chosen || cw.dir) : cw.dir;
-    if (!game.steer.selected) {
-      if (game.steer.graceT <= 0) { doCrash(null, '未选定方向'); }
-    } else {
-      // 标题演示模式：AI 视为始终按住弯道方向
-      const holdDir = game.state === 'title' ? chosen : (input.left ? -1 : input.right ? 1 : 0);
-      if (game.steer.graceT <= 0 && holdDir !== chosen) {
-        doCrash(null, holdDir === 0 ? '松开方向键' : '转向方向错误');
-      }
-      if (Math.abs(p.x) > ri.half - 1.0) doCrash(null, '撞上护栏');
-    }
+    game.jn = { j, phase: 'bend', exit };         // 车道锁定（主循环抑制变道）
   }
-  return cw;
 }
 
 // —— AI 自动驾驶（标题页演示；自动应对弯道）——
 function aiInput(dt, cw) {
   const p = game.player;
   game.aiLaneT -= dt;
-  if (game.aiLaneT <= 0 && (!cw || game.steer.phase === 'none')) {
+  if (game.aiLaneT <= 0) {
     game.aiLaneT = 3 + Math.random() * 4;
     if (Math.random() < 0.7) {
       const dir = p.lane === 0 ? 1 : p.lane === CFG.lanes - 1 ? -1 : (Math.random() < 0.5 ? -1 : 1);
       p.lane += dir;
     }
   }
-  if (cw) game.steer.selected = true;                  // AI 直接选定
+  // AI 在路口待转区随机变道演示选向
+  const jnw = getTrack().junctionWindowAt(playerZabs());
+  if (jnw && playerZabs() < jnw.j.bendZ && Math.random() < dt * 0.5) {
+    const info = getTrack().roadInfoAt(playerZabs());
+    const dir = game.player.lane === 0 ? 1 : game.player.lane === info.lanes - 1 ? -1 : (Math.random() < 0.5 ? -1 : 1);
+    game.player.lane = clamp(game.player.lane + dir, 0, info.lanes - 1);
+  }
   return {
     up: p.speed < CFG.maxSpeed * 0.55, down: false, nitro: false,
     laneL: false, laneR: false,
@@ -265,13 +216,13 @@ function tickOnce(dt) {
     } else if (a === 'toggleFps') game.showFps = !game.showFps;
     else if (a === 'curveMode') {
       // 跳到下一个弯道的预告牌前（测试用）
-      const next = getTrack().nextCurveStart(playerZabs());
+      const next = getTrack().nextJunctionStart(playerZabs());
       if (next) {
         game.cam.z = wrapZ(next.waitZ - 350);
         game.player.speed = CFG.maxSpeed * 0.5;
         game.traffic.reset(playerZabs());
         game.introT = 0.8;
-        game.steer = { phase: 'none', curve: null, selected: false, chosen: 0, progress: 0, startX: 0, graceT: 0, trav: 0 }; // 瞬移后清陈旧状态
+        game.jn = null;                         // 瞬移后清陈旧状态
       }
     } else if (a === 'laneL') laneL = true;
     else if (a === 'laneR') laneR = true;
@@ -285,9 +236,9 @@ function tickOnce(dt) {
 
   if (game.state === 'title' || game.state === 'running') {
     const track = getTrack();
-    const cw = updateSteer(dt, laneL, laneR);
-    // 转向区/待转区内，方向键只用于选定与按住，不再触发变道（§10.4）
-    if (game.steer.phase === 'wait' || game.steer.phase === 'active') { laneL = false; laneR = false; }
+    updateJunction();
+    // 路口弯道内车道锁定（§10.4 修订：过了待转区不能自由变道）
+    if (game.jn && game.jn.phase === 'bend') { laneL = false; laneR = false; }
     // 车道数随路段变化：重映射当前车道索引（§5）
     const ri = track.roadInfoAt(playerZabs());
     if (ri.lanes !== game.lastLanes) {
@@ -296,21 +247,14 @@ function tickOnce(dt) {
     }
     p.laneMax = ri.lanes;
     const laneX = track.laneCenterAt(playerZabs(), p.lane);
-    const steerActive = game.steer.phase === 'active' && game.steer.selected;
-    const steerParam = steerActive ? {
-      active: true,
-      dir: game.steer.curve.freeDir ? (game.steer.chosen || game.steer.curve.dir) : game.steer.curve.dir,
-      rate: p.speed * CFG.steerDisp / CFG.steerZoneLen,
-      apex: ri.half - 1.7,
-    } : null;
 
     if (game.state === 'title') {
-      updatePlayer(p, aiInput(dt, cw), dt, curveAhead, steerParam, laneX);
+      updatePlayer(p, aiInput(dt), dt, curveAhead, laneX, ri.type === 'desert');
       advanceWorld(dt);
       game.traffic.update(dt, p, playerZabs(), Infinity, []);   // 演示模式车流照常
     } else {
       p.nitroOn = input.nitro && p.nitro > 0.05 && p.speed > CFG.maxSpeed * 0.3;
-      updatePlayer(p, { up: input.up, down: input.down, nitro: input.nitro, laneL, laneR, holdDir: input.left ? -1 : input.right ? 1 : 0 }, dt, curveAhead, steerParam, laneX, ri.type === 'desert');
+      updatePlayer(p, { up: input.up, down: input.down, nitro: input.nitro, laneL, laneR, holdDir: input.left ? -1 : input.right ? 1 : 0 }, dt, curveAhead, laneX, ri.type === 'desert');
 
       // 沙漠公路出界减速（§5：无护栏，冲出路肩判定）
       if (ri.type === 'desert' && Math.abs(p.x) > ri.half - 0.55) {
@@ -358,7 +302,7 @@ function tickOnce(dt) {
 
   // 偏航（看向弯内 §4A.1）：转向区增益 ×1.6；幅度收敛（参考视频：视角平稳）
   const curveAhead2 = segAt(game.cam.z + 60).curve;
-  const gain = game.steer.phase === 'active' ? CFG.curveGain : 1;
+  const gain = game.jn && game.jn.phase === 'bend' ? CFG.curveGain : 1;
   const yawT = clamp(-curveAhead2 * (p.speed / CFG.maxSpeed) * 0.03 * gain, -0.035, 0.035);
   game.yaw += (yawT - game.yaw) * (1 - Math.exp(-dt / 0.25));
   cam.cx = W / 2 + game.yaw * W;
@@ -381,7 +325,7 @@ function tickOnce(dt) {
   renderWorld(ctx, W, H, game);
   if (game.state === 'running' || game.state === 'paused') {
     drawHUD(ctx, W, H, game);
-    drawSteer(ctx, W, H, game);
+    drawJunction(ctx, W, H, game);
   } else if (game.state === 'title') {
     drawTitle(ctx, W, H, game);
   } else if (game.state === 'crashing' || game.state === 'crashed') {

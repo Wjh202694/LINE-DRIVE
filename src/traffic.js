@@ -33,7 +33,7 @@ export class Traffic {
 
   trySpawn(zAbs, force = false) {
     const track = getTrack();
-    if (track.curveWindowAt(wrapZ(zAbs))) return false;      // 弯道禁行窗内不生成（§10.4）
+    if (track.junctionWindowAt(wrapZ(zAbs))) return false;   // 路口窗内不生成（待转区+弯道）
     const info = track.roadInfoAt(zAbs);
     const free = [];
     for (let lane = 0; lane < info.lanes; lane++) {
@@ -80,7 +80,7 @@ export class Traffic {
       c.changeCd = Math.max(0, c.changeCd - dt);
 
       // 驶入弯道禁行窗 → 静默移除（待转区/转向区无障碍车）
-      if (track.curveWindowAt(c.z)) { this.cars.splice(i, 1); continue; }
+      if (track.junctionWindowAt(c.z)) { this.cars.splice(i, 1); continue; }
 
       // —— §10.2 变道决策：资格 + 玩家 150–400m 区间随机时刻 + 一生一次 ——
       if (c.canChange && !c.changed && !c.changeState && c.changeCd <= 0) {

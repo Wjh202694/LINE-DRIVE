@@ -1,7 +1,7 @@
 // render.js — 分层渲染器：灭点参考 → 道路线稿 → 护栏 → 路侧物 → 障碍车 → 主车 → 特效
 // 全部程序化线条，线宽三档 + 大气透视（§3.2），颜色一律取自 PAL。
 // §10.1：近裁剪面（车 z<8m 不画）、zKey=round(z*10) 稳定排序、sprite 绘制取整。
-import { CFG, ROAD_HALF, clamp, lerp } from './config.js';
+import { CFG, clamp, lerp } from './config.js';
 import { PAL } from './palette.js';
 import { getTrack, wrapDelta } from './road.js';
 import { drawSprite } from './sprites.js';
@@ -23,7 +23,6 @@ export function renderWorld(ctx, W, H, game) {
   const baseIdx = Math.floor(cam.z / SL);
   const frac = (cam.z % SL) / SL;
   const baseSeg = segs[baseIdx % N];
-  const steer = game.steer || { phase: 'none' };
 
   // —— 背景 ——
   ctx.fillStyle = PAL.bg;
@@ -171,7 +170,7 @@ export function renderWorld(ctx, W, H, game) {
 
     // 待转区：边缘加密线（§10.5）
     if (seg.densify && w1 > 3) {
-      const ib = (ROAD_HALF - 0.55) / ROAD_HALF;
+      const ib = (seg.half - 0.55) / seg.half;
       ctx.globalAlpha = a * 0.75;
       ctx.lineWidth = Math.max(0.7, lw * 0.55);
       ctx.beginPath();
@@ -198,18 +197,34 @@ export function renderWorld(ctx, W, H, game) {
       ctx.lineWidth = lw;
     }
 
-    // 转向区金线（选定方向后的行车预览线，弯道内侧 §10.4）
-    if (seg.curve !== 0 && steer.selected && w1 > 3) {
-      const ib = (steer.curve.dir * (ROAD_HALF - 1.1)) / ROAD_HALF;
-      ctx.globalAlpha = 0.85;
+    // 路口待转区：车道选向箭头（每出口对应车道，金色，§10.4 修订）
+    if (seg.junction && w1 > 10) {
+      const laneW = ((seg.half - 0.9) * 2) / seg.lanes;
+      const ppiA = PS[k] * cam.halfW;
+      ctx.globalAlpha = 0.75 + 0.25 * Math.sin(game.time * 5);
       ctx.strokeStyle = PAL.gold;
-      ctx.lineWidth = Math.max(1.2, 2.2 * scr);
-      ctx.beginPath();
-      ctx.moveTo(x1 + w1 * ib, y1); ctx.lineTo(x2 + w2 * ib, y2);
-      ctx.stroke();
-      ctx.strokeStyle = PAL.line;
+      ctx.lineWidth = Math.max(1.2, 1.8 * scr);
+      ctx.lineCap = 'round';
+      for (const e of seg.junction.exits) {
+        for (const lane of e.lanes) {
+          const lm = (lane - (seg.lanes - 1) / 2) * laneW;
+          const ax = x1 + w1 * (lm / seg.half), ay = y1;
+          const al = Math.max(6, 0.55 * ppiA);
+          ctx.beginPath();
+          if (e.dir === 0) {
+            // 直行：竖线 + 头
+            ctx.moveTo(ax, ay); ctx.lineTo(ax, ay - al);
+            ctx.moveTo(ax - al * 0.22, ay - al * 0.62); ctx.lineTo(ax, ay - al); ctx.lineTo(ax + al * 0.22, ay - al * 0.62);
+          } else {
+            // 转向：折线 + 头
+            const d = e.dir;
+            ctx.moveTo(ax, ay - al * 0.1); ctx.lineTo(ax, ay - al * 0.55); ctx.lineTo(ax + d * al * 0.55, ay - al * 0.95);
+            ctx.moveTo(ax + d * al * 0.3, ay - al * 0.98); ctx.lineTo(ax + d * al * 0.58, ay - al * 0.93); ctx.lineTo(ax + d * al * 0.5, ay - al * 0.68);
+          }
+          ctx.stroke();
+        }
+      }
       ctx.globalAlpha = a;
-      ctx.lineWidth = lw;
     }
 
     // 启程金线

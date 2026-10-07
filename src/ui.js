@@ -291,53 +291,39 @@ function drawArrow(ctx, x, y, dir, s = 1) {
   ctx.stroke();
 }
 
-export function drawSteer(ctx, W, H, game) {
-  const s = game.steer;
-  if (!s || s.phase === 'none' || !s.curve || game.state !== 'running') return;
-  const dir = s.curve.dir;
+// —— 路口 HUD（§10.4 修订版：车道选向）——
+// 待转区：各出口对应车道说明 + 当前车道走向；弯道：随路行驶提示
+export function drawJunction(ctx, W, H, game) {
+  const jn = game.jn;
+  if (!jn || game.state !== 'running') return;
+  const j = jn.j;
   const cx = W / 2;
   ctx.save();
-  ctx.textAlign = 'left'; ctx.lineCap = 'round';
+  ctx.textAlign = 'center';
 
-  if (s.phase === 'wait') {
-    // 待转区：方向提示 + 选定打勾
-    ctx.strokeStyle = PAL.line; ctx.fillStyle = PAL.line;
-    ctx.font = MONO(13); ctx.globalAlpha = 0.7;
-    ctx.fillText('弯 道 待 转 区', cx - 150, 116);
-    ctx.globalAlpha = 1;
-    ctx.lineWidth = 2.5;
-    drawArrow(ctx, cx - 150 + 8, 146, dir, 1.5);
-    ctx.font = MONO(17, 700);
-    ctx.fillText(dir > 0 ? '按住 → 完成转向' : '按住 ← 完成转向', cx - 110, 152);
-    if (s.selected) {
-      ctx.strokeStyle = PAL.gold; ctx.fillStyle = PAL.gold;
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.moveTo(cx - 104, 176); ctx.lineTo(cx - 96, 184); ctx.lineTo(cx - 80, 166);
-      ctx.stroke();
-      ctx.font = MONO(13); ctx.fillText('已选定 · 金线已画入', cx - 68, 182);
-    } else {
-      ctx.strokeStyle = PAL.line; ctx.fillStyle = PAL.line;
-      ctx.font = MONO(13);
-      ctx.globalAlpha = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(game.time * 5));
-      ctx.fillText('按一次方向键选定', cx - 104, 180);
-      ctx.globalAlpha = 1;
+  if (jn.phase === 'wait') {
+    ctx.font = MONO(13, 700); ctx.fillStyle = PAL.gold; ctx.globalAlpha = 0.9;
+    ctx.fillText('前方路口 · 变道选向', cx, 116);
+    ctx.font = MONO(12); ctx.fillStyle = PAL.line; ctx.globalAlpha = 0.85;
+    let yy = 142;
+    for (const e of j.exits) {
+      const lanesStr = e.lanes.length > 1
+        ? `第 ${e.lanes[0] + 1}-${e.lanes[e.lanes.length - 1] + 1} 车道`
+        : `第 ${e.lanes[0] + 1} 车道`;
+      ctx.fillText(`${e.label} → ${lanesStr}`, cx, yy);
+      yy += 20;
     }
-  } else if (s.phase === 'active') {
-    // 转向区：左下角进度弧（区间行进度）+ 按住状态
-    const frac = clamp(s.progress, 0, 1);
-    const held = dir > 0 ? input.right : input.left;
-    const acx = 108, acy = H - 108, r = 40;
-    ctx.lineWidth = 2; ctx.strokeStyle = PAL.line; ctx.globalAlpha = 0.3;
-    ctx.beginPath(); ctx.arc(acx, acy, r, Math.PI * 0.75, Math.PI * 2.25); ctx.stroke();
-    ctx.globalAlpha = 1; ctx.strokeStyle = PAL.gold; ctx.lineWidth = 3.5;
-    ctx.beginPath();
-    ctx.arc(acx, acy, r, Math.PI * 0.75, Math.PI * 0.75 + frac * Math.PI * 1.5);
-    ctx.stroke();
-    ctx.fillStyle = held ? PAL.gold : PAL.danger;
-    ctx.font = MONO(13, 700); ctx.textAlign = 'center';
-    ctx.fillText(held ? '转 向 中' : '按 住 方 向 键 ！', acx, acy + 5);
-    ctx.textAlign = 'left';
+    // 当前车道的走向高亮
+    const cur = j.exits.find(e => e.lanes.includes(game.player.lane));
+    if (cur) {
+      ctx.fillStyle = PAL.gold; ctx.font = MONO(13, 700);
+      ctx.fillText(`当前车道 → ${cur.label}`, cx, yy + 6);
+    }
+    ctx.globalAlpha = 1;
+  } else if (jn.phase === 'bend') {
+    ctx.font = MONO(12); ctx.fillStyle = PAL.line; ctx.globalAlpha = 0.55;
+    ctx.fillText('路口通过中 · 车道锁定', cx, 116);
+    ctx.globalAlpha = 1;
   }
   ctx.restore();
 }
