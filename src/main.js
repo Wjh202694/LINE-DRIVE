@@ -53,8 +53,8 @@ const game = {
   introT: 0, startZ: -1,
   dist: 0, score: 0, combo: 0, maxCombo: 0, comboFlashT: -9, overtakes: 0, peak: 0,
   impacts: 0, failReason: null,
-  steer: { phase: 'none', curve: null, selected: false, progress: 0, startX: 0, graceT: 0 },
-  fovBreathT: 0, yaw: 0,
+  jn: null,
+  fovBreathT: 0, camYaw: 0, viewYaw: 0, lastPX: 0,
   crashT: 0, newBest: false,
   best: LS.best, bestKm: LS.bestKm, runs: LS.runs,
   themeT: CFG.themeFirst, themeToastT: 0, titleAnimT: 0,
@@ -81,10 +81,10 @@ function beginRun() {
   p.crashed = false;
   p.invuln = 1.0;
   if (game.state === 'crashed') p.speed = CFG.maxSpeed * 0.5;
-  // 重开位置若落在弯道禁行窗内（转向区内撞毁的情形），退到弯前 120m，避免秒判负死循环
+  // 重开位置若落在路口窗内（弯道中撞毁的情形），退到待转区前 120m，避免秒判负死循环
   const jw = getTrack().junctionWindowAt(playerZabs());
-  if (cw) {
-    game.cam.z = wrapZ(cw.waitZ - 120);
+  if (jw) {
+    game.cam.z = wrapZ(jw.j.waitZ - 120);
     p.speed = CFG.maxSpeed * 0.5;
     game.traffic.reset(playerZabs());
     game.introT = 0.8;
@@ -154,14 +154,15 @@ function updateJunction() {
   }
 }
 
-// —— AI 自动驾驶（标题页演示；自动应对弯道）——
-function aiInput(dt, cw) {
+// —— AI 自动驾驶（标题页演示；自动应对路口选向）——
+function aiInput(dt) {
   const p = game.player;
   game.aiLaneT -= dt;
   if (game.aiLaneT <= 0) {
     game.aiLaneT = 3 + Math.random() * 4;
     if (Math.random() < 0.7) {
-      const dir = p.lane === 0 ? 1 : p.lane === CFG.lanes - 1 ? -1 : (Math.random() < 0.5 ? -1 : 1);
+      const L = game.lastLanes || 3;
+      const dir = p.lane === 0 ? 1 : p.lane === L - 1 ? -1 : (Math.random() < 0.5 ? -1 : 1);
       p.lane += dir;
     }
   }
@@ -175,7 +176,6 @@ function aiInput(dt, cw) {
   return {
     up: p.speed < CFG.maxSpeed * 0.55, down: false, nitro: false,
     laneL: false, laneR: false,
-    holdDir: cw ? cw.dir : 0,
   };
 }
 
@@ -304,8 +304,14 @@ function tickOnce(dt) {
   const curveAhead2 = segAt(game.cam.z + 60).curve;
   const gain = game.jn && game.jn.phase === 'bend' ? CFG.curveGain : 1;
   const yawT = clamp(-curveAhead2 * (p.speed / CFG.maxSpeed) * 0.03 * gain, -0.035, 0.035);
-  game.yaw += (yawT - game.yaw) * (1 - Math.exp(-dt / 0.25));
-  cam.cx = W / 2 + game.yaw * W;
+  game.camYaw += (yawT - game.camYaw) * (1 - Math.exp(-dt / 0.25));
+  cam.cx = W / 2 + game.camYaw * W;
+
+  // §7A.3 viewYaw 单一状态源：camYaw×0.75 + 横向速度×0.25（τ=0.2s 平滑）
+  const latVel = (p.x - (game.lastPX ?? p.x)) / Math.max(dt, 1e-4);
+  game.lastPX = p.x;
+  const viewYawT = game.camYaw * 1.08 + clamp(latVel * 0.010, -0.30, 0.30);
+  game.viewYaw += (viewYawT - game.viewYaw) * (1 - Math.exp(-dt / 0.2));
 
   // —— 画质自适应 ——
   game.qT = (game.qT || 0) + dt;

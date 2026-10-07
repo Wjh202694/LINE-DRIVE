@@ -4,9 +4,10 @@
 import { CFG, clamp, lerp } from './config.js';
 import { PAL } from './palette.js';
 import { getTrack, wrapDelta } from './road.js';
-import { drawSprite } from './sprites.js';
+import { drawSprite, drawSpriteScaled } from './sprites.js';
 import { shake, drawFx, drawSpeedLines, drawNitroFlames } from './fx.js';
 import { drawBackground } from './bg.js';
+import { sideProfile, carLength } from './wire.js';
 
 // 段边界投影缓存（模块级复用，避免 GC）
 const MAXP = 512;
@@ -15,6 +16,47 @@ const PX = new Float64Array(MAXP), PY = new Float64Array(MAXP),
 
 // 待绘 sprite：z = 相对相机距离（m），按 zKey 稳定排序后由远及近绘制
 const items = [];
+
+// 车体 3D 混合绘制（§7A.2/§7A.3）：后脸位图随 cos(θ) 压缩 + 侧影线稿随 sin(θ) 浮现
+// θ = 相对偏航（透视项 + viewYaw 状态源 + 自身变道角），连续无跳变
+const CARHW = { player: 0.97, sedan: 0.92, truck: 1.225, bus: 1.225 };
+function drawCar3D(ctx, cam, game, key, type, sx, yBase, ppm, alpha, relYaw) {
+  const th = clamp(relYaw, -1.35, 1.35);
+  const sn = Math.sin(th), cs = Math.cos(th);
+  const outward = Math.sign(sx - cam.cx) || 1;
+  const len = carLength(type);
+
+  // 侧面线稿（先画，垫底）：从车尾外缘向画面中心延伸
+  const sideAlpha = clamp(Math.abs(sn) * 1.7 - 0.06, 0, 1) * alpha;
+  if (sideAlpha > 0.03) {
+    const prof = sideProfile(type);
+    const lw = len * Math.abs(sn) * ppm;
+    const xRear = sx + outward * cs * ((CARHW[type] || 0.95) * ppm);
+    ctx.globalAlpha = sideAlpha;
+    ctx.strokeStyle = PAL.line;
+    ctx.lineWidth = Math.max(1, ppm * 0.013);
+    ctx.beginPath();
+    for (const poly of prof) {
+      for (let i = 0; i < poly.length; i++) {
+        const u = (poly[i][0] + len / 2) / len;              // 0=车尾 1=车头
+        const X = xRear - outward * u * lw;
+        const Y = yBase - poly[i][1] * ppm;
+        i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+      }
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  // 后脸位图（随 cos 压缩；cos 在 ±77° 钳制下 ≥0.22，永不消失）
+  drawSpriteScaled(ctx, key, sx, yBase, ppm, alpha, Math.max(0.22, cs));
+}
+
+// 障碍车相对偏航：透视项（横向/纵深）+ 全局 viewYaw + 自身变道偏角
+function obstacleRelYaw(cam, c, zrel, game) {
+  const persp = Math.atan2(c.x - cam.x, Math.max(zrel, 4)) * 0.9;
+  const own = clamp((c.x - getTrack().laneCenterAt(c.z, c.lane)) * 0.22, -0.3, 0.3);
+  return (game.viewYaw || 0) * 0.5 + persp + own;
+}
 
 export function renderWorld(ctx, W, H, game) {
   const cam = game.cam;
@@ -254,8 +296,8 @@ export function renderWorld(ctx, W, H, game) {
           if (cz < CFG.playerZ - 1.1) continue;      // 近裁剪：越过主车平面滑出屏幕后再消失
           // 尺寸用车自身距离连续计算（段边界量化会造成"抽帧"式跳变）
           const ppiCar = (cam.depth / cz) * cam.halfW;
-          // 超车运行逻辑（参考真实行车视频）：被超车始终保持同一造型，
-          // 随接近平滑放大并借助横向投影向外滑出画框，不做模型切换
+          // 超车立体感（§7A.3）：相对偏航驱动后脸压缩 + 侧影浮现，全程连续
+          const relYaw = obstacleRelYaw(cam, c, cz, game);
           const blink = c.changeState
             ? { on: c.changeState === 'moving' || Math.floor(c.signalT * 12) % 2 === 0, side: c.blinkSide }
             : null;
@@ -263,6 +305,7 @@ export function renderWorld(ctx, W, H, game) {
             key: c.type.key,
             x: lerp(x1, x2, f) + ppiCar * c.x, y: lerp(y1, y2, f),
             ppm: ppiCar, flip: false, a, z: cz, blink,
+            car3d: { relYaw, type: c.type.key },
           });
         }
       }
@@ -273,7 +316,11 @@ export function renderWorld(ctx, W, H, game) {
   for (const it of items) it.zKey = Math.round(it.z * 10);
   items.sort((a, b) => b.zKey - a.zKey);             // JS sort 稳定：同键不交换
   for (const it of items) {
-    drawSprite(ctx, it.key, it.x, it.y, it.ppm, it.a, it.flip);
+    if (it.car3d) {
+      drawCar3D(ctx, cam, game, it.key, it.car3d.type, it.x, it.y, it.ppm, it.a, it.car3d.relYaw);
+    } else {
+      drawSprite(ctx, it.key, it.x, it.y, it.ppm, it.a, it.flip);
+    }
     // 变道转向灯（侧后方金色短线，闪 3 次 §10.2）
     if (it.blink && it.blink.on) {
       const bx = it.x + it.blink.side * 0.8 * it.ppm;
@@ -287,7 +334,7 @@ export function renderWorld(ctx, W, H, game) {
     }
   }
 
-  // —— 主车 ——
+  // —— 主车（§7A.3：viewYaw 单一状态源，后脸+侧影混合）——
   const p = game.player;
   if (!p.crashed && game.introT <= 0) {
     const ppmP = (cam.depth / CFG.playerZ) * cam.halfW;
@@ -301,7 +348,7 @@ export function renderWorld(ctx, W, H, game) {
     ctx.save();
     ctx.translate(bx, by);
     ctx.rotate(p.tilt - segs[(baseIdx + 8) % N].curve * (p.speed / CFG.maxSpeed) * 0.02);
-    drawSprite(ctx, 'player', 0, 0, ppmP, blink, false);
+    drawCar3D(ctx, cam, game, 'player', 'player', 0, 0, ppmP, blink, game.viewYaw || 0);
     ctx.restore();
   }
 

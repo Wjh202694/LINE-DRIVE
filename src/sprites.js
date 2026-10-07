@@ -432,6 +432,20 @@ function getSprite(key, tier) {
   return cv;
 }
 
+// 带 X 轴缩放的绘制（车体后脸随视角旋转压缩，§7A.3）
+export function drawSpriteScaled(ctx, key, x, yBase, ppm, alpha, scaleX) {
+  const def = DEFS[key];
+  if (!def || Math.abs(scaleX) < 0.05 || alpha <= 0.02 || ppm < 1.2) return;
+  const tier = Math.min(TIERS.length - 1, Math.max(0, Math.round(Math.log2(ppm / TIERS[0]))));
+  const cv = getSprite(key, tier);
+  if (!cv) return;
+  const w = (def.w + MARGIN * 2) * ppm * scaleX;
+  const h = (def.h + MARGIN) * ppm;
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(cv, x - w / 2, yBase - h, w, h);
+  ctx.globalAlpha = 1;
+}
+
 export function drawSprite(ctx, key, x, yBase, ppm, alpha = 1, flip = false) {
   if (alpha <= 0.02 || ppm < 1.2) return;
   const def = DEFS[key];
