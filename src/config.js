@@ -12,7 +12,7 @@ export const CFG = {
 
   // —— 道路 ——
   segLen: 5,              // 段长 m
-  segCount: 1400,         // 段数（循环跑道 7km）
+  segCount: 2600,         // 段数（循环跑道 13km，容下 11 类段落）
   lanes: 3,
   laneWidth: 3.7,
   shoulder: 0.8,          // 路肩宽 m
@@ -34,7 +34,7 @@ export const CFG = {
   coastDecel: 2.4,              // 松油门滑行减速
   laneShift: 0.16,              // 变道插值 160ms（§8）
   nitroDrain: 0.30, nitroRegen: 0.06, nitroOvertake: 0.18,
-  centrifugal: 0.045,           // 弯道离心漂移系数（M1 弯道调试用）
+  centrifugal: 4.0,             // 弯道离心漂移系数（配合 steerCurve=0.011 量级）
 
   // —— 车流 ——
   trafficBase: 8, trafficMax: 12, teachDensity: 4,
@@ -47,18 +47,32 @@ export const CFG = {
   hitInvuln: 2.0,         // 重创无敌 s
   crashAnim: 1.5,         // 撞毁演出时长 s（完整版 2.8s 属 M4）
 
-  // —— 转向系统（§10.4 + 2026-10-06 视频参考：舒缓大弧线、低频出现）——
-  curveGapMin: 2600, curveGapMax: 4200, // 弯段间隔 m（低频；首弯 1500m）
-  firstCurveZ: 1500,      // 首个弯道位置 m
-  waitZoneLen: 200,       // 待转区 m（无障碍车）
-  steerZoneLen: 300,      // 转向区 m（长弧线）
-  steerCurve: 1.0,        // 转向区峰值曲率（缓）
-  steerRamp: 12,          // 曲率 ease-in-out 渐入渐出段数（消除折角）
-  steerDisp: 1.4,         // 转向区横向位移 m（车身基本居中，参考视频）
-  steerGrace: 0.35,       // 进入转向区后允许的反应宽限 s
-  steerDrift: 3.5,        // 松手/按反时的离心外漂速度 m/s（~1.6s 撞栏）
+  // —— 转向系统（§10.4 + 2026-10-07 修订：固定双分支岔路 + 按住转向）——
+  curveGapMin: 400, curveGapMax: 900,   // 弯段间隔 m（岔路是核心选择玩法，保持存在感）
+  firstCurveZ: 800,       // 首个弯道位置 m（教学直道后尽快接触选择玩法）
+  waitZoneLen: 200,       // 待转区 m（无障碍车，车道选向）
+  rampSegs: 32,           // 匝道分流段数（160m，弯离主线；短促=大离开角）
+  mergeSegs: 48,          // 匝道汇入段数（240m，缓回主线，逐渐对齐）
+  rampHalf: 2.65,         // 匝道半宽（单车道 3.7m + 路肩 0.8m）
+  forkDiv: 30,            // 匝道峰值横向偏移增量 m（v4.6：7.5→30，真正的大弯视觉）
+  // —— 分岔·新主干道（v4.9）：单车道匝道扩展为 3 车道新主干道 ——
+  splitDiv: 20,           // 分岔匝道峰值偏移（比汇入型近——要收心回中心）
+  splitHoldN: 30,         // 分岔平直段数（150m，无按键自由行驶）
+  splitRetN: 56,          // 分岔收心+扩展段数（280m，off→0 且 half→6.35）
+  steerCurve: 0.011,      // S 弯峰值曲率（每段朝向增量；缓弧 ~23°）
+  steerDisp: 1.4,         // 转向区横向位移 m（保留参数）
+  steerGrace: 0.35,       // 进入强制转向区后允许的反应宽限 s
+  steerDrift: 3.5,        // 松手/按反时的向外漂移速度 m/s（~1.4s 撞栏）
   curveGain: 1.6,         // 转向区视角偏航增益
-  barrierX: 5.35,         // 撞栏边界（车身中心，路缘 6.35 - 半车宽）
+  barrierX: 5.35,         // 撞栏边界（保留参数）
+
+  // —— 金币线 / 加速带（§2.2/§2.3）——
+  coinScore: 20,          // 金币 +20/枚
+  boostKick: 6.0,         // 加速带瞬时速度增量 m/s
+  boostNitro: 0.15,       // 加速带氮气回充
+
+  // —— 跨海大桥（§5#7）——
+  bridgeWind: 0.5,        // 桥面侧风横向加速度 m/s²（满速时）
 
   // —— 主题流转（§3.2A，M2）——
   themeFirst: 60,         // 开局墨夜，首次切换 s

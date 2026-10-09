@@ -1,5 +1,8 @@
 // traffic.js — 障碍车对象池 + 变道 AI（§10.2）+ 碰撞事件（撞击计数判定在 main，§10.3）
-import { CFG } from './config.js';
+// 2026-10-07 修复「跑到车道之外」：变道边界与目标坐标一律用所在路段实际车道几何
+// （info.lanes / laneCenterAt），不再用全局常量 CFG.lanes / CFG.laneWidth；
+// 跨路段车道数变化时按比例重映射车道索引；每帧由 laneCenterAt 重导 x（自愈漂移）。
+import { CFG, clamp } from './config.js';
 import { wrapDelta, wrapZ, segIndexAt, getTrack } from './road.js';
 
 const TYPES = {
@@ -33,7 +36,7 @@ export class Traffic {
 
   trySpawn(zAbs, force = false) {
     const track = getTrack();
-    if (track.junctionWindowAt(wrapZ(zAbs))) return false;   // 路口窗内不生成（待转区+弯道）
+    if (track.junctionRemovalAt(wrapZ(zAbs))) return false;   // 待转区/分叉口不生成
     const info = track.roadInfoAt(zAbs);
     const free = [];
     for (let lane = 0; lane < info.lanes; lane++) {
@@ -46,12 +49,12 @@ export class Traffic {
       type: t, lane, z: zAbs,
       x: track.laneCenterAt(zAbs, lane),
       speed: t.vMin + Math.random() * (t.vMax - t.vMin),
-      prevDz: 1, scrapeCd: 0,
+      prevDz: 1, scrapeCd: 0, lastLanes: info.lanes,
       // —— §10.2 变道 AI ——
       canChange: Math.random() < 0.35,   // 生成时 35% 成为可变道车
       changed: false,                     // 一生一次
       changeCd: 0, changeState: null,     // null | 'signal' | 'moving'
-      changeFrom: 0, changeTo: 0, changeT: 0, signalT: 0, targetLane: 0, blinkSide: 0,
+      fromLane: 0, toLane: 0, changeT: 0, signalT: 0, blinkSide: 0,
     });
     return true;
   }
@@ -79,8 +82,21 @@ export class Traffic {
       c.scrapeCd = Math.max(0, c.scrapeCd - dt);
       c.changeCd = Math.max(0, c.changeCd - dt);
 
-      // 驶入弯道禁行窗 → 静默移除（待转区/转向区无障碍车）
-      if (track.junctionWindowAt(c.z)) { this.cars.splice(i, 1); continue; }
+      // 路段车道数变化 → 按比例重映射车道索引（杜绝旧索引指向不存在的车道）
+      const info = track.roadInfoAt(c.z);
+      if (info.lanes !== c.lastLanes) {
+        c.lane = clamp(Math.round((c.lane * (info.lanes - 1)) / Math.max(1, c.lastLanes - 1)), 0, info.lanes - 1);
+        c.lastLanes = info.lanes;
+        if (c.changeState === 'moving') { c.changeState = null; }
+      }
+
+      // 驶入待转区/分叉口：转向车道的车淡出移除，直行车道的车继续直行通过
+      const jw = track.junctionRemovalAt(c.z);
+      if (jw && c.dying == null && track.exitForLane(jw.j, c.lane).dir !== 0) c.dying = 0.7;
+      if (c.dying != null) {
+        c.dying -= dt;
+        if (c.dying <= 0) { this.cars.splice(i, 1); continue; }
+      }
 
       // —— §10.2 变道决策：资格 + 玩家 150–400m 区间随机时刻 + 一生一次 ——
       if (c.canChange && !c.changed && !c.changeState && c.changeCd <= 0) {
@@ -88,18 +104,20 @@ export class Traffic {
         if (dz > 150 && dz < 400 && Math.random() < dt * 0.25) {
           let dir = Math.random() < 0.5 ? -1 : 1;
           if (c.lane === 0) dir = 1;                        // 边界只向内（杜绝撞围栏）
-          if (c.lane === CFG.lanes - 1) dir = -1;
-          const target = c.lane + dir;
-          const blocked = this.cars.some(o => o !== c &&
-            (o.lane === target || (o.changeState && o.targetLane === target)) &&
-            Math.abs(wrapDelta(o.z - c.z)) < 30);           // 避让：目标车道 ±30m 有车则放弃
-          if (blocked) {
+          if (c.lane === info.lanes - 1) dir = -1;          // 用实际车道数判界（修复出车道 bug）
+          const target = clamp(c.lane + dir, 0, info.lanes - 1);
+          if (target === c.lane) {
             c.changeCd = 2.0;
           } else {
-            c.changeState = 'signal'; c.signalT = 0.5;      // 转向灯预告 0.5s（闪 3 次）
-            c.changeFrom = c.x;
-            c.changeTo = (target - (CFG.lanes - 1) / 2) * CFG.laneWidth;
-            c.targetLane = target; c.blinkSide = dir;
+            const blocked = this.cars.some(o => o !== c &&
+              (o.lane === target || (o.changeState && o.toLane === target)) &&
+              Math.abs(wrapDelta(o.z - c.z)) < 30);         // 避让：目标车道 ±30m 有车则放弃
+            if (blocked) {
+              c.changeCd = 2.0;
+            } else {
+              c.changeState = 'signal'; c.signalT = 0.5;    // 转向灯预告 0.5s（闪 3 次）
+              c.fromLane = c.lane; c.toLane = target; c.blinkSide = dir;
+            }
           }
         }
       }
@@ -110,11 +128,14 @@ export class Traffic {
         c.changeT += dt / CFG.laneShift;                    // 与主车同参数 160ms
         const k = Math.min(1, c.changeT);
         const e = k * k * (3 - 2 * k);                      // smoothstep
-        c.x = c.changeFrom + (c.changeTo - c.changeFrom) * e;
+        // 目标坐标实时取所在路段车道几何（修复固定 laneWidth 导致的偏出）
+        c.x = track.laneCenterAt(c.z, c.fromLane) * (1 - e) + track.laneCenterAt(c.z, c.toLane) * e;
         if (k >= 1) {
-          c.lane = c.targetLane; c.changed = true;
-          c.changeState = null; c.x = c.changeTo;
+          c.lane = c.toLane; c.changed = true;
+          c.changeState = null; c.x = track.laneCenterAt(c.z, c.lane);
         }
+      } else {
+        c.x = track.laneCenterAt(c.z, c.lane);              // 每帧重导（自愈任何漂移）
       }
 
       const dz = wrapDelta(c.z - playerZabs);

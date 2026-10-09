@@ -19,7 +19,10 @@ export function initInput(canvas) {
         break;
       case 'KeyP': actions.push('pause'); break;
       case 'Escape': actions.push('title'); break;
+      case 'KeyM': actions.push('map'); break;
+      case 'KeyG': actions.push('gallery'); break;
       case 'KeyF': actions.push('toggleFps'); break;
+      case 'KeyN': actions.push('mute'); break;
       case 'KeyC': actions.push('curveMode'); break;
       case 'Enter': actions.push('start'); break;
     }
@@ -39,13 +42,18 @@ export function initInput(canvas) {
     if (touchId !== null) return;
     const t = e.changedTouches[0];
     touchId = t.identifier; touchX0 = t.clientX; touchT0 = performance.now(); swiped = false;
+    const W2 = innerWidth, H2 = innerHeight;
+    // 顶部 1/6 单击 = 暂停
+    if (t.clientY < H2 / 6) { actions.push('pause'); lastTapT = performance.now(); return; }
+    // 右下 1/4 = 暂停按钮区域（防误触，）
+    if (t.clientX > W2 * 0.82 && t.clientY > H2 * 0.65) { actions.push('pause'); return; }
+    // 双击 = 氮气
     const now = performance.now();
-    if (now - lastTapT < 300) actions.push('nitroBurst');   // 双击氮气
+    if (now - lastTapT < 300) actions.push('nitroBurst');
     lastTapT = now;
-    holdTimer = setTimeout(() => { input.up = true; }, 180); // 长按加速
-    // 按住左右半屏 = 按住方向（转向区 §10.4 移动端）
-    if (t.clientX < innerWidth / 2) { input.left = true; input.right = false; }
-    else { input.right = true; input.left = false; }
+    // 上半屏 = 加速；下半屏 = 刹车（不分左右）
+    if (t.clientY < H2 / 2) { input.up = true; input.down = false; }
+    else { input.down = true; input.up = false; }
   }, { passive: false });
 
   canvas.addEventListener('touchmove', (e) => {
@@ -65,16 +73,19 @@ export function initInput(canvas) {
   const end = (e) => {
     e.preventDefault();
     if (![...e.changedTouches].some(t => t.identifier === touchId)) return;
-    touchId = null; clearTimeout(holdTimer); input.up = false;
-    input.left = false; input.right = false;
+    touchId = null; input.up = false; input.down = false; input.left = false; input.right = false;
     const dt = performance.now() - touchT0;
+    const w = window.innerWidth;
     if (!swiped && dt < 180) {
-      const w = window.innerWidth;
       if (touchX0 < w * 0.33) actions.push('laneL');
       else if (touchX0 > w * 0.67) actions.push('laneR');
-      else actions.push('start');
+      // 中间单击 = 暂停（避免误触，按钮区单击已用）
     }
   };
   canvas.addEventListener('touchend', end, { passive: false });
   canvas.addEventListener('touchcancel', end, { passive: false });
+  // 双指 tap = 暂停
+  canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) { e.preventDefault(); actions.push('pause'); }
+  }, { passive: false });
 }

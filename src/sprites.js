@@ -4,12 +4,26 @@
 // 素材位图经 trimInk 自动裁墨迹边界，白线遮罩按主题 source-in 染色，保留四档 LOD。
 import { PAL, onThemeChanged } from './palette.js';
 import playerCarUrl from './assets/playerCar.png';
+import playerRear45Url from './assets/orig/player_rear45.jpg';
 import house1Url from './assets/orig/house1.jpg';
 import house2Url from './assets/orig/house2.jpg';
 import house3Url from './assets/orig/house3.jpg';
 import house4Url from './assets/orig/house4.jpg';
 import cactusAUrl from './assets/orig/cactus_a.jpg';
 import cactusBUrl from './assets/orig/cactus_b.jpg';
+import deadTreeUrl from './assets/orig/dead_tree.jpg';
+import treeAUrl from './assets/orig/tree_a.jpg';
+import treeBUrl from './assets/orig/tree_b.jpg';
+import lampAUrl from './assets/orig/lamp_a.jpg';
+import lampBUrl from './assets/orig/lamp_b.jpg';
+import poleUrl from './assets/orig/pole.jpg';
+import gantryUrl from './assets/orig/gantry.jpg';
+import footbridgeUrl from './assets/orig/footbridge.jpg';
+import towerAUrl from './assets/orig/tower_a.jpg';
+import towerBUrl from './assets/orig/tower_b.jpg';
+import windmillUrl from './assets/orig/windmill.jpg';
+import forkSignUrl from './assets/orig/fork_sign.jpg';
+import curveSignUrl from './assets/orig/curve_sign_face.jpg';
 
 // —— 小工具 ——
 // 倒角矩形（图纸感的"圆角"），顺时针闭合
@@ -297,22 +311,45 @@ const SIGN = {
 // —— 主车位图 def（直接套用视频建模）：就绪前回退矢量版 playerVec ——
 const PLAYER_BM = { bitmap: true, w: 1.94, h: 1.33, ax: 0, fallback: 'playerVec' };
 
+// —— 对向车流剪影（p2_oncoming 的矢量化迷你版，远小近大擦身而过）——
+const ONCOMING = {
+  w: 1.78, h: 1.45, lw: 0.05,
+  lines: [
+    { pts: mir([[0.80, 0.16], [0.86, 0.42], [0.84, 0.66], [0.80, 0.78], [0.62, 0.82],
+                [0.56, 0.98], [0.50, 1.14], [0.44, 1.16], [0, 1.17]]) },
+    { pts: [[-0.62, 0.16], [0.62, 0.16]] },
+    { pts: [[-0.42, 0.86], [0.42, 0.86], [0.36, 1.06], [-0.36, 1.06], [-0.42, 0.86]], lw: 0.04 },
+    { pts: rr(-0.52, 0.60, 1.04, 0.10, 0.03), color: 'danger', lw: 0.045 },
+    { pts: mir(rr(-0.80, 0, 0.18, 0.30, 0.04)) },
+  ],
+};
+
+// —— 隧道肋骨线（程序化绘制用，作简易锚点 sprite；实测在 render.js 里走隧道暗化通道）——
+const TUNNEL_RIB = { w: 0.2, h: 4.0, lw: 0.05,
+  lines: [
+    { pts: [[-0.05, 0], [0.05, 0], [0.05, 4.0], [-0.05, 4.0]] },
+    { pts: [[-0.10, 1.0], [0.10, 1.0]], color: 'gold', lw: 0.08 },
+  ],
+};
+
 export const DEFS = {
   player: PLAYER_BM, playerVec: PLAYER, sedan: SEDAN, truck: TRUCK, bus: BUS,
   sedan_q: SEDAN_Q, truck_q: TRUCK_Q, bus_q: BUS_Q,
-  lamp: LAMP, post: POST, sign: SIGN,
+  lamp: LAMP, post: POST, sign: SIGN, oncoming: ONCOMING, tunnel_rib: TUNNEL_RIB,
 };
 
 // —— 位图注册：加载 → 亮度转 alpha（白线遮罩）→ trimInk 裁墨迹边界 → 四档 LOD ——
 // 就绪前 getSprite/segmentsOf 回退到矢量 def（playerVec）或跳过绘制
+// opts: maxSide 降采样上限（省内存）；cropBelow 擦除场景图底部的透视路面
+//       { y: 起始高度比例, keep: [[x0,x1]…] 保留列（龙门架/天桥的立柱）}
 const bitmapDefs = [];
 function registerBitmap(key, url, worldW, opts = {}) {
   const img = new Image();
   img.onload = () => {
-    const mask = processLineArt(img, 25, 1.8);          // JPG 白线黑底 → 白+alpha（玩家 PNG 幂等）
+    const mask = processLineArt(img, 25, 1.8, opts.maxSide || 896, opts.cropBelow);
     const trim = trimInk(mask, 25);
     const def = { bitmap: true, img: trim.cv, srcW: trim.w, srcH: trim.h,
-                  w: worldW, h: worldW * trim.h / trim.w, ax: 0, ...opts };
+                  w: worldW, h: worldW * trim.h / trim.w, ax: opts.ax || 0, ...opts };
     bitmapDefs.push(def);
     DEFS[key] = def;
     refreshSprites();
@@ -320,17 +357,34 @@ function registerBitmap(key, url, worldW, opts = {}) {
   img.src = url;
 }
 
-// 白线 JPG → 白+alpha 遮罩（亮度转 alpha）
-function processLineArt(img, knee, gain) {
+// 白线 JPG → 白+alpha 遮罩（亮度转 alpha；可降采样 + 底部路面擦除；四角自动反色）
+function processLineArt(img, knee, gain, maxSide = 896, cropBelow = null) {
+  const k = Math.min(1, maxSide / Math.max(img.width, img.height));
   const cv = document.createElement('canvas');
-  cv.width = img.width; cv.height = img.height;
+  cv.width = Math.max(2, Math.round(img.width * k));
+  cv.height = Math.max(2, Math.round(img.height * k));
   const c = cv.getContext('2d');
-  c.drawImage(img, 0, 0);
+  c.drawImage(img, 0, 0, cv.width, cv.height);
   const d = c.getImageData(0, 0, cv.width, cv.height);
+  const w = cv.width, hgt = cv.height;
+  const corners = [0, (w - 6) * 4, (hgt - 6) * w * 4, ((hgt - 6) * w + w - 6) * 4];
+  const inv = corners.reduce((a, o) => a + d.data[o], 0) / 4 > 128;   // 白底黑线 → 反色
   for (let i = 0; i < d.data.length; i += 4) {
-    const lum = d.data[i];
+    let lum = d.data[i];
+    if (inv) lum = 255 - lum;
     d.data[i] = 255; d.data[i + 1] = 255; d.data[i + 2] = 255;
     d.data[i + 3] = Math.min(255, Math.max(0, (lum - knee) * gain));
+  }
+  // 场景图（龙门架/天桥）底部带透视路面线：除保留列（立柱）外整行擦除
+  if (cropBelow) {
+    const y0 = Math.floor(cropBelow.y * cv.height);
+    const keep = (cropBelow.keep || []).map(([a, b]) => [Math.round(a * cv.width), Math.round(b * cv.width)]);
+    for (let y = y0; y < cv.height; y++) {
+      for (let x = 0; x < cv.width; x++) {
+        if (keep.some(([a, b]) => x >= a && x < b)) continue;
+        d[(y * cv.width + x) * 4 + 3] = 0;
+      }
+    }
   }
   c.putImageData(d, 0, 0);
   return cv;
@@ -360,12 +414,31 @@ function trimInk(img, knee = 25) {
 }
 
 registerBitmap('player', playerCarUrl, 1.94);
+// 主车后 45°（v4 新素材 §7A.0 缺口补齐）：尾立面中心 ≈ 76% 处 → ax = +1.17
+registerBitmap('player_q', playerRear45Url, 4.5, { maxSide: 1024, ax: 1.17 });
 registerBitmap('house1', house1Url, 4.8);
 registerBitmap('house2', house2Url, 4.4);
 registerBitmap('house3', house3Url, 5.2);
 registerBitmap('house4', house4Url, 4.6);
 registerBitmap('cactus_a', cactusAUrl, 1.3);
 registerBitmap('cactus_b', cactusBUrl, 1.6);
+registerBitmap('dead_tree', deadTreeUrl, 2.4);
+registerBitmap('tree_a', treeAUrl, 2.4);
+registerBitmap('tree_b', treeBUrl, 2.8);
+registerBitmap('lamp_a', lampAUrl, 2.7);
+registerBitmap('lamp_b', lampBUrl, 2.7);
+registerBitmap('pole', poleUrl, 1.6);
+// 龙门架/天桥为场景图：擦除底部透视路面，仅保留立柱列（20m 跨 4 车道）
+registerBitmap('gantry', gantryUrl, 19, { maxSide: 1152,
+  cropBelow: { y: 0.63, keep: [[0.09, 0.205], [0.795, 0.91]] } });
+registerBitmap('footbridge', footbridgeUrl, 19.5, { maxSide: 1152,
+  cropBelow: { y: 0.72, keep: [[0.0, 0.28], [0.72, 1.0]] } });
+// 跨海大桥桥塔 w=24m（v4.3：素材放大 3 倍；中央放置在路面上，远景桥塔主体）
+registerBitmap('tower_a', towerAUrl, 24, { maxSide: 1024 });
+registerBitmap('tower_b', towerBUrl, 24, { maxSide: 1024 });
+registerBitmap('windmill', windmillUrl, 8.5);
+registerBitmap('fork_sign', forkSignUrl, 3.9);
+registerBitmap('curve_sign_face', curveSignUrl, 3.0);
 
 // —— 预渲染：四档 LOD（32/64/128/256 px/m，§10.1 根因 3）——
 // 对数空间相邻两层交叉淡化（重叠带 ≥10%），杜绝层级跳变；绘制坐标取整（根因 2）。
@@ -433,7 +506,8 @@ function getSprite(key, tier) {
 }
 
 // 带 X 轴缩放的绘制（车体后脸随视角旋转压缩，§7A.3）
-export function drawSpriteScaled(ctx, key, x, yBase, ppm, alpha, scaleX) {
+// ax = 锚点（车尾立面中心）相对图心的世界偏移：压缩绕锚点进行，车尾位置稳定
+export function drawSpriteScaled(ctx, key, x, yBase, ppm, alpha, scaleX, flip = false) {
   const def = DEFS[key];
   if (!def || Math.abs(scaleX) < 0.05 || alpha <= 0.02 || ppm < 1.2) return;
   const tier = Math.min(TIERS.length - 1, Math.max(0, Math.round(Math.log2(ppm / TIERS[0]))));
@@ -441,9 +515,31 @@ export function drawSpriteScaled(ctx, key, x, yBase, ppm, alpha, scaleX) {
   if (!cv) return;
   const w = (def.w + MARGIN * 2) * ppm * scaleX;
   const h = (def.h + MARGIN) * ppm;
+  let axPx = ((def.ax || 0) + def.w / 2 + MARGIN) * ppm * scaleX;
+  if (flip) axPx = w - axPx;                    // 镜像后锚点从右缘量
   ctx.globalAlpha = alpha;
-  ctx.drawImage(cv, x - w / 2, yBase - h, w, h);
+  if (flip) {
+    ctx.save(); ctx.translate(x, yBase); ctx.scale(-1, 1);
+    ctx.drawImage(cv, axPx - w, -h, w, h); ctx.restore();
+  } else {
+    ctx.drawImage(cv, x - axPx, yBase - h, w, h);
+  }
   ctx.globalAlpha = 1;
+}
+
+// 弯道预告牌（p0_curve_sign_face 位图牌面 + 程序双柱，flip = 左弯）
+export function drawCurveSign(ctx, x, yBase, ppm, alpha, flip) {
+  if (alpha <= 0.02 || ppm < 1.2) return;
+  ctx.strokeStyle = PAL.line;
+  ctx.lineWidth = Math.max(1, 0.09 * ppm);
+  ctx.globalAlpha = alpha * 0.9;
+  ctx.beginPath();
+  for (const px of [-0.95, 0.95]) {
+    ctx.moveTo(x + px * ppm, yBase);
+    ctx.lineTo(x + px * ppm, yBase - 2.05 * ppm);
+  }
+  ctx.stroke();
+  drawSprite(ctx, 'curve_sign_face', x, yBase - 1.98 * ppm, ppm, alpha, flip);
 }
 
 export function drawSprite(ctx, key, x, yBase, ppm, alpha = 1, flip = false) {

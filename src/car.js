@@ -7,14 +7,32 @@ export function createPlayer() {
     nitro: 1, nitroOn: false,
     invuln: 0, tilt: 0, drift: 0,
     crashed: false, blinkT: 0,
+    absorbed: false, absorbedT: 0,         // v4.10：split 收心后切到新主线（brDir=0），新主线开始淡入
+    turnProg: 0, turnZoneTotal: 100,       // v4.11 转向完成条（按住时按路程/总长逐渐填充；出弯 <75% 失败）
+    inTurn: false, lastTurnDir: undefined,
   };
 }
 
 // input: { up, down, nitro, laneL, laneR, holdDir }（laneL/laneR 为边沿触发）
-// laneX: 当前路段车道中心（车道数随路段变化 §5）
+// laneX: 当前路径中心（主线车道中心或匝道中心线，含坡道/岔路）
 // freeEdge: 沙漠路段自由路肩——最外车道继续按住同方向键可驶入沙地（§5 出界减速）
 export function updatePlayer(p, input, dt, curveAhead, laneX, freeEdge) {
   const speedPct = p.speed / CFG.maxSpeed;
+
+  // —— §10.4 强制转向区行为 ——
+  // turn.dir = ±1 意味着这是弯曲段（匝道弯曲 / S 弯），须按住方向；grace 期内不计外漂。
+  // 此外 main.js 还会对"直行过岔路"额外判按 ←/→，这里只负责 turn 状态下的横向反馈。
+  if (p.turn && p.turn.dir) {
+    p.turnT = (p.turnT || 0) + dt;
+    if (input.holdDir === p.turn.dir) {
+      p.drift *= Math.exp(-dt / 0.12);                  // 按住：贴线
+    } else if (!p.turn.grace && p.turnT > CFG.steerGrace) {
+      const rate = CFG.steerDrift * (input.holdDir === -p.turn.dir ? 1.8 : 1);
+      p.drift += -p.turn.dir * rate * dt;
+    }
+  } else {
+    p.turnT = 0;
+  }
 
   // —— 速度模型：油门 / 刹车 / 滑行 ——
   const max = p.nitroOn ? CFG.nitroSpeed : CFG.maxSpeed;
@@ -49,8 +67,10 @@ export function updatePlayer(p, input, dt, curveAhead, laneX, freeEdge) {
     // 常态弯道离心漂移（调试/过弯）
     p.drift -= curveAhead * speedPct * CFG.centrifugal * dt * 60 * 0.1;
   }
-  p.drift *= Math.exp(-dt / 0.6);
-  p.drift = clamp(p.drift, -1.15, 1.15);
+  // 常态外演回中；强制转向区未按住时不衰减（让外漂持续积累直到撞栏）
+  if (!(p.turn && p.turn.dir && input.holdDir !== p.turn.dir)) p.drift *= Math.exp(-dt / 0.6);
+  // 强制转向区内放宽钳制：外漂必须能冲出护栏距离（2.3m+），否则撞栏判定永不触发
+  p.drift = clamp(p.drift, p.turn ? -8 : -1.15, p.turn ? 8 : 1.15);
 
   // —— 氮气计量 ——
   if (p.nitroOn) {
