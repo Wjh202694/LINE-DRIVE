@@ -19,7 +19,7 @@ import { clearFx, updateFx, updateShake, addShake, burstSparks, shatter } from '
 import { updatePalette, setTheme, consumeSpriteRebuild, THEME_ORDER, THEMES, PAL } from './palette.js';
 import { refreshSprites } from './sprites.js';
 import { initBg } from './bg.js';
-import { startIntro, updateIntro } from './video.js';
+// import { startIntro, updateIntro } from './video.js';  // §6A.5 开场视频已移除（2026-10-12）
 import { drawMap, drawGallery, UNLOCKS, unlockedCount } from './menu.js';
 import { initAudio, resumeAudio, setEngineState, killEngine,
          sfxOvertake, sfxScrape, sfxHit, sfxCoin, sfxBoost, sfxLane,
@@ -600,9 +600,6 @@ function tickOnce(dt) {
     }
     if (game.state === 'paused') drawPause(ctx, W, H);
   }
-  // 开场视频（§6A.5：叠在标题页之上，播完/跳过后淡出移除）
-  updateIntro(dt, () => { /* 视频结束：标题页已在底层实时运行，无需切换 */ });
-
   // —— M5：移动端适配（§4.3 竖屏提示 + 首局触控引导）——
   if (!window.__LD?.headless) {
     if (H > W * 1.05) {
@@ -690,8 +687,6 @@ function processEvent(ev) {
 
 requestAnimationFrame(loop);
 
-// —— M4：开场视频（§6A.5 会话内只播一次；标题页在底层实时预热，播完淡出即是 live 画面）——
-startIntro(null);
 // —— M5：音频初始化（首次用户手势解锁 AudioContext）——
 initAudio();
 // 每次手势都尝试 resume（幂等加固：自动播放策略要求真实用户手势，且部分浏览器需要多个手势）
