@@ -472,16 +472,11 @@ registerBitmap('dead_tree', deadTreeUrl, 2.4);
 registerBitmap('tree_a', treeAUrl, 2.4);
 registerBitmap('tree_b', treeBUrl, 2.8);
 registerBitmap('lamp_a', lampAUrl, 2.7);
-// v4.12：双灯人行道路灯 worldW 2.7→4.0（变高变宽，符合"双灯路灯"应有体量；修"过矮"问题）
-registerBitmap('lamp_b', lampBUrl, 4.0);
+registerBitmap('lamp_b', lampBUrl, 2.7);
 registerBitmap('pole', poleUrl, 1.6);
-// 龙门架/天桥为场景图：擦除底部透视路面（含中央虚影），仅保留立柱列（20m 跨 4 车道）
-// v4.12：keep 项四元组 [xa,xb,ya,yb]——立柱列只在 [0, 0.78] 保留（基座在 0.72-0.75）
-// 非 keep 列（中央虚影）从 0.65 就擦（虚影顶部在 0.65）—— 解决"虚影残留"和"立柱浮空"两难
-registerBitmap('gantry', gantryUrl, 19, { maxSide: 1152,
-  cropBelow: { y: 0.65, keep: [[0.09, 0.205, 0, 0.78], [0.795, 0.91, 0, 0.78]] } });
-registerBitmap('footbridge', footbridgeUrl, 19.5, { maxSide: 1152,
-  cropBelow: { y: 0.65, keep: [[0.0, 0.28, 0, 0.78], [0.72, 1.0, 0, 0.78]] } });
+// 龙门架/天桥为场景图：v4.13 原图已预裁剪干净（仅含立柱+横梁+牌面 / 立柱+人行桥+楼梯+桁架），无需 cropBelow
+registerBitmap('gantry', gantryUrl, 19, { maxSide: 1152 });
+registerBitmap('footbridge', footbridgeUrl, 19.5, { maxSide: 1152 });
 // 跨海大桥桥塔 w=24m（v4.3：素材放大 3 倍；中央放置在路面上，远景桥塔主体）
 registerBitmap('tower_a', towerAUrl, 24, { maxSide: 1024 });
 registerBitmap('tower_b', towerBUrl, 24, { maxSide: 1024 });
