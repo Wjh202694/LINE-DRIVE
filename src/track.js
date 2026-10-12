@@ -96,8 +96,10 @@ export function buildTrack(seedIn = 20261007) {
           s.sprites.push({ key: ka, off: (s.half + 1.0), flip: true });
         }
         if (def.poles && i % (CFG.lampEvery * 2) === CFG.lampEvery) {
-          s.sprites.push({ key: 'pole', off: -(s.half + 1.6), flip: false });
-          s.sprites.push({ key: 'pole', off: (s.half + 1.6), flip: true });
+          // v4.12：电线杆从路外 1.6m（off=9.2m）挪到路外 0.2m（off=7.8m）—— 夹在龙门架立柱（~6.7m）和路灯（8.6m）之间
+          // pole↔lamp 距离从 0.6m 拉到 0.8m，且位置在龙门架与路灯之间（用户的视觉顺序要求）
+          s.sprites.push({ key: 'pole', off: -(s.half + 0.2), flip: false });
+          s.sprites.push({ key: 'pole', off: (s.half + 0.2), flip: true });
         }
         if (def.rails && i % CFG.postEvery === 0) {
           s.sprites.push({ key: 'post', off: -(s.half + 0.30), flip: false });

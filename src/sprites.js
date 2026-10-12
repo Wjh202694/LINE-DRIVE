@@ -472,7 +472,8 @@ registerBitmap('dead_tree', deadTreeUrl, 2.4);
 registerBitmap('tree_a', treeAUrl, 2.4);
 registerBitmap('tree_b', treeBUrl, 2.8);
 registerBitmap('lamp_a', lampAUrl, 2.7);
-registerBitmap('lamp_b', lampBUrl, 2.7);
+// v4.12：双灯人行道路灯 worldW 2.7→4.0（变高变宽，符合"双灯路灯"应有体量；修"过矮"问题）
+registerBitmap('lamp_b', lampBUrl, 4.0);
 registerBitmap('pole', poleUrl, 1.6);
 // 龙门架/天桥为场景图：擦除底部透视路面（含中央虚影），仅保留立柱列（20m 跨 4 车道）
 // v4.12：keep 项四元组 [xa,xb,ya,yb]——立柱列只在 [0, 0.78] 保留（基座在 0.72-0.75）
