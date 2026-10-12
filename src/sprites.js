@@ -415,13 +415,20 @@ function processLineArt(img, knee, gain, maxSide = 896, cropBelow = null) {
     d.data[i + 3] = Math.min(255, Math.max(0, (lum - knee) * gain));
   }
   // 场景图（龙门架/天桥）底部带透视路面线：除保留列（立柱）外整行擦除
+  // v4.12：keep 项支持 [xa, xb, ya, yb]——既限定列范围（立柱所在列）也限定行范围（避免擦到立柱基座时也保留虚影）
+  // 解决"虚影顶部 0.65 / 立柱基座 0.72"两难：非 keep 列从 cropBelow.y 擦，keep 列只到 y_bottom
   if (cropBelow) {
     const y0 = Math.floor(cropBelow.y * cv.height);
-    const keep = (cropBelow.keep || []).map(([a, b]) => [Math.round(a * cv.width), Math.round(b * cv.width)]);
-    for (let y = y0; y < cv.height; y++) {
+    const keep = (cropBelow.keep || []).map(([a, b, yA, yB]) => [
+      Math.round(a * cv.width), Math.round(b * cv.width),
+      yA != null ? Math.floor(yA * cv.height) : 0,
+      yB != null ? Math.floor(yB * cv.height) : cv.height,
+    ]);
+    for (let y = 0; y < cv.height; y++) {
       for (let x = 0; x < cv.width; x++) {
-        if (keep.some(([a, b]) => x >= a && x < b)) continue;
-        d[(y * cv.width + x) * 4 + 3] = 0;
+        // 在某个 keep 区域内 → 保留；否则 y >= y0 → 擦除
+        const inKeep = keep.some(([xa, xb, ya, yb]) => x >= xa && x < xb && y >= ya && y < yb);
+        if (!inKeep && y >= y0) d[(y * cv.width + x) * 4 + 3] = 0;
       }
     }
   }
@@ -467,12 +474,13 @@ registerBitmap('tree_b', treeBUrl, 2.8);
 registerBitmap('lamp_a', lampAUrl, 2.7);
 registerBitmap('lamp_b', lampBUrl, 2.7);
 registerBitmap('pole', poleUrl, 1.6);
-// 龙门架/天桥为场景图：擦除底部透视路面，仅保留立柱列（20m 跨 4 车道）
-// v4.12：cropBelow y 0.63→0.78，保留立柱基座（基座在原图 75% 高度处，0.63 把基座切掉→"凭空起"浮空感）
+// 龙门架/天桥为场景图：擦除底部透视路面（含中央虚影），仅保留立柱列（20m 跨 4 车道）
+// v4.12：keep 项四元组 [xa,xb,ya,yb]——立柱列只在 [0, 0.78] 保留（基座在 0.72-0.75）
+// 非 keep 列（中央虚影）从 0.65 就擦（虚影顶部在 0.65）—— 解决"虚影残留"和"立柱浮空"两难
 registerBitmap('gantry', gantryUrl, 19, { maxSide: 1152,
-  cropBelow: { y: 0.78, keep: [[0.09, 0.205], [0.795, 0.91]] } });
+  cropBelow: { y: 0.65, keep: [[0.09, 0.205, 0, 0.78], [0.795, 0.91, 0, 0.78]] } });
 registerBitmap('footbridge', footbridgeUrl, 19.5, { maxSide: 1152,
-  cropBelow: { y: 0.78, keep: [[0.0, 0.28], [0.72, 1.0]] } });
+  cropBelow: { y: 0.65, keep: [[0.0, 0.28, 0, 0.78], [0.72, 1.0, 0, 0.78]] } });
 // 跨海大桥桥塔 w=24m（v4.3：素材放大 3 倍；中央放置在路面上，远景桥塔主体）
 registerBitmap('tower_a', towerAUrl, 24, { maxSide: 1024 });
 registerBitmap('tower_b', towerBUrl, 24, { maxSide: 1024 });
