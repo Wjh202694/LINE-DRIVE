@@ -17,7 +17,7 @@ import { drawHUD, drawTitle, drawCrash, drawPause, drawJunction } from './ui.js'
 import { initInput, input, consumeActions } from './input.js';
 import { clearFx, updateFx, updateShake, addShake, burstSparks, shatter } from './fx.js';
 import { updatePalette, setTheme, consumeSpriteRebuild, THEME_ORDER, THEMES, PAL } from './palette.js';
-import { refreshSprites } from './sprites.js';
+import { refreshSprites, spritesReady, onSpritesReady } from './sprites.js';
 import { initBg } from './bg.js';
 // import { startIntro, updateIntro } from './video.js';  // §6A.5 开场视频已移除（2026-10-12）
 import { drawMap, drawGallery, UNLOCKS, unlockedCount } from './menu.js';
@@ -64,6 +64,7 @@ const game = {
          pitch: 0,                                  // 上下坡俯仰（rad）
          yawLocal: 0 },                              // 弯道水平偏航
   introT: 0, startZ: -1,
+  startPending: false,   // 位图未就绪时按 start 标记；ready 后自动 beginRun
   dist: 0, score: 0, combo: 0, maxCombo: 0, comboFlashT: -9, overtakes: 0, peak: 0,
   impacts: 0, failReason: null,
   jn: null, turn: null,
@@ -96,6 +97,7 @@ function setFov(fov) {
 }
 
 function beginRun() {
+  if (!spritesReady()) return;   // 双保险：位图未就绪拒绝起跑（避免 fallback 矢量版闪现）
   const p = game.player;
   p.crashed = false;
   p.invuln = 1.0;
@@ -271,12 +273,22 @@ function tickOnce(dt) {
   if (game.state === 'title') game.titleAnimT += dt;
   game.pickFlashT = Math.max(-9, game.pickFlashT - dt);
 
+  // —— 位图就绪后自动起跑（start 输入因位图未好被暂存）——
+  if (game.startPending && spritesReady()) {
+    game.startPending = false;
+    beginRun(); sfxStart(); resumeAudio();
+  }
+
   // —— 输入 ——
   const acts = consumeActions();
   let laneL = false, laneR = false;
   for (const a of acts) {
     if (a === 'start') {
-      if (game.state === 'title' || game.state === 'crashed') { beginRun(); sfxStart(); resumeAudio(); }
+      if (game.state === 'title' || game.state === 'crashed') {
+        // 位图未就绪时按 start 立即起跑会显示 fallback 矢量版（"旧版贴图"），等几百毫秒再起也无感
+        if (spritesReady()) { beginRun(); sfxStart(); resumeAudio(); }
+        else game.startPending = true;   // 标志"等位图就绪自动起跑"
+      }
     } else if (a === 'pause') {
       if (game.state === 'running') game.state = 'paused';
       else if (game.state === 'paused') game.state = 'running';

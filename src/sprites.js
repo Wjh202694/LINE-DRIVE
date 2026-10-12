@@ -343,7 +343,13 @@ export const DEFS = {
 // opts: maxSide 降采样上限（省内存）；cropBelow 擦除场景图底部的透视路面
 //       { y: 起始高度比例, keep: [[x0,x1]…] 保留列（龙门架/天桥的立柱）}
 const bitmapDefs = [];
+const readyResolvers = new Map();
+let pendingBitmaps = 0;        // 未就绪位图计数
+let bitmapsReadyFlag = false;  // 所有位图就绪后翻 true
+const readyCallbacks = [];
+
 function registerBitmap(key, url, worldW, opts = {}) {
+  pendingBitmaps++;
   const img = new Image();
   img.onload = () => {
     const mask = processLineArt(img, 25, 1.8, opts.maxSide || 896, opts.cropBelow);
@@ -353,9 +359,42 @@ function registerBitmap(key, url, worldW, opts = {}) {
     bitmapDefs.push(def);
     DEFS[key] = def;
     refreshSprites();
+    // —— 就绪信号：递减计数，0 时翻转 ready 标志并触发回调 ——
+    pendingBitmaps--;
+    if (pendingBitmaps <= 0) {
+      pendingBitmaps = 0;
+      if (!bitmapsReadyFlag) {
+        bitmapsReadyFlag = true;
+        for (const cb of readyCallbacks) try { cb(); } catch { /* 忽略回调异常 */ }
+      }
+    }
+  };
+  img.onerror = () => {
+    // 图片加载失败：仍要解除阻塞，否则游戏永远起不来
+    pendingBitmaps--;
+    if (pendingBitmaps <= 0) {
+      pendingBitmaps = 0;
+      if (!bitmapsReadyFlag) {
+        bitmapsReadyFlag = true;
+        for (const cb of readyCallbacks) try { cb(); } catch { /* 忽略 */ }
+      }
+    }
   };
   img.src = url;
 }
+
+// —— 就绪查询/订阅 API（main.js 用来在 title 状态等待位图加载，避免起跑后第一帧用 fallback 矢量版）——
+export function spritesReady() { return bitmapsReadyFlag; }
+export function pendingBitmapCount() { return pendingBitmaps; }
+export function onSpritesReady(cb) {
+  if (bitmapsReadyFlag) { try { cb(); } catch { /* 忽略 */ } return () => {}; }
+  readyCallbacks.push(cb);
+  return () => {
+    const i = readyCallbacks.indexOf(cb);
+    if (i >= 0) readyCallbacks.splice(i, 1);
+  };
+}
+
 
 // 白线 JPG → 白+alpha 遮罩（亮度转 alpha；可降采样 + 底部路面擦除；四角自动反色）
 function processLineArt(img, knee, gain, maxSide = 896, cropBelow = null) {
@@ -493,7 +532,10 @@ function getSprite(key, tier) {
     if (!def) return getSprite('playerVec', tier);
     if (def.bitmap) {
       if (!def.img) {
-        // 位图未就绪：有矢量兜底则用兜底，否则本帧跳过绘制（绝不能让 drawImage 吃到 undefined）
+        // 位图未就绪：
+        // - 主车（玩家最敏感）宁可本帧不画也不能 fallback 到矢量版（旧版贴图的视觉）
+        // - 其他位图有矢量兜底则用兜底，否则本帧跳过绘制（绝不能让 drawImage 吃到 undefined）
+        if (key === 'player') return null;
         return def.fallback ? getSprite(def.fallback, tier) : null;
       }
       cv = buildBitmapTier(def, TIERS[tier]);

@@ -1,7 +1,7 @@
 // ui.js — HUD / 标题页 / 结算页 / 暂停 / 转向提示（全线稿风，颜色取自 PAL）
 import { CFG, clamp } from './config.js';
 import { PAL } from './palette.js';
-import { drawSprite } from './sprites.js';
+import { drawSprite, spritesReady } from './sprites.js';
 import { input } from './input.js';
 
 const MONO = (s, w = 500) => `${w} ${s}px ui-monospace, 'Cascadia Mono', Consolas, 'Microsoft YaHei', monospace`;
@@ -202,7 +202,8 @@ export function drawTitle(ctx, W, H, game) {
 
     ctx.font = MONO(15, 700);
     ctx.globalAlpha = late * (0.4 + 0.6 * (0.5 + 0.5 * Math.sin(game.time * 3.9)));
-    spaced(ctx, '按 空格 / 触屏 启程', W / 2, titleY + 96, 3);
+    // 位图未就绪前显示"准备中"，避免玩家按空格后第一帧用 fallback 矢量版（"旧版贴图"）
+    spaced(ctx, spritesReady() ? '按 空格 / 触屏 启程' : '正 在 准 备 资 源 …', W / 2, titleY + 96, 3);
     ctx.globalAlpha = 1;
   }
 
