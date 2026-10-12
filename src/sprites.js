@@ -468,10 +468,11 @@ registerBitmap('lamp_a', lampAUrl, 2.7);
 registerBitmap('lamp_b', lampBUrl, 2.7);
 registerBitmap('pole', poleUrl, 1.6);
 // 龙门架/天桥为场景图：擦除底部透视路面，仅保留立柱列（20m 跨 4 车道）
+// v4.12：cropBelow y 0.63→0.78，保留立柱基座（基座在原图 75% 高度处，0.63 把基座切掉→"凭空起"浮空感）
 registerBitmap('gantry', gantryUrl, 19, { maxSide: 1152,
-  cropBelow: { y: 0.63, keep: [[0.09, 0.205], [0.795, 0.91]] } });
+  cropBelow: { y: 0.78, keep: [[0.09, 0.205], [0.795, 0.91]] } });
 registerBitmap('footbridge', footbridgeUrl, 19.5, { maxSide: 1152,
-  cropBelow: { y: 0.72, keep: [[0.0, 0.28], [0.72, 1.0]] } });
+  cropBelow: { y: 0.78, keep: [[0.0, 0.28], [0.72, 1.0]] } });
 // 跨海大桥桥塔 w=24m（v4.3：素材放大 3 倍；中央放置在路面上，远景桥塔主体）
 registerBitmap('tower_a', towerAUrl, 24, { maxSide: 1024 });
 registerBitmap('tower_b', towerBUrl, 24, { maxSide: 1024 });

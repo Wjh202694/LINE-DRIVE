@@ -14,6 +14,7 @@ const PX = new Float64Array(MAXP), PY = new Float64Array(MAXP),
       YW = new Float64Array(MAXP);
 
 const items = [];
+const pendingRails = [];   // v4.12：护栏立柱待绘制队列（推迟到 sprite items 之后，避免被 gantry 立柱遮盖）
 
 const SPAN_KEYS = new Set(['gantry', 'footbridge', 'tower_a', 'tower_b']);
 
@@ -297,6 +298,7 @@ export function renderWorld(ctx, W, H, game) {
   const D = Math.min(game.drawDist || CFG.drawDist, MAXP - 2);
   const scr = H / 1080;
   items.length = 0;
+  pendingRails.length = 0;  // v4.12：护栏立柱推迟到 sprite 之后绘制（避免被 gantry 立柱遮盖）
 
   const introK = game.introT > 0 ? 1 - game.introT / 0.8 : 1;
   const hideNear = game.introT > 0 ? Math.floor(D * (1 - introK)) : -1;
@@ -426,14 +428,9 @@ export function renderWorld(ctx, W, H, game) {
       // 缺口处的端头立柱（标记匝道"入口端"——车从端头"穿过"）
       if (gapL) { ctx.beginPath(); ctx.moveTo(x1 - w1 * ro, y1 - rh1 * 0.55); ctx.lineTo(x1 - w1 * ro, y1); ctx.stroke(); }
       if (gapR) { ctx.beginPath(); ctx.moveTo(x1 + w1 * ro, y1 - rh1 * 0.55); ctx.lineTo(x1 + w1 * ro, y1); ctx.stroke(); }
-      // 非缺口区的常规立柱
-      if (!gapL || !gapR) {
-        if (seg.i % CFG.postEvery === 0 || seg.curve !== 0 || seg.turn) {
-          ctx.beginPath();
-          if (!gapL) { ctx.moveTo(x1 - w1 * ro, y1); ctx.lineTo(x1 - w1 * ro, y1 - rh1); }
-          if (!gapR) { ctx.moveTo(x1 + w1 * ro, y1); ctx.lineTo(x1 + w1 * ro, y1 - rh1); }
-          ctx.stroke();
-        }
+      // 非缺口区的常规立柱：v4.12 推迟到 sprite items 之后绘制（避免被 gantry 立柱遮盖）——这里仅记录
+      if ((!gapL || !gapR) && (seg.i % CFG.postEvery === 0 || seg.curve !== 0 || seg.turn)) {
+        pendingRails.push({ x1, y1, w1, ro, rh1, a, lw, z: zrel });
       }
       ctx.globalAlpha = a;
       ctx.lineWidth = lw;
@@ -626,6 +623,19 @@ export function renderWorld(ctx, W, H, game) {
       ctx.stroke();
     }
   }
+
+  // —— v4.12：护栏立柱在 sprite 之后画（不被 gantry 立柱遮盖）——
+  // 按 z 排序保持与原段循环一致（远→近）
+  pendingRails.sort((x, y) => y.z - x.z);
+  for (const r of pendingRails) {
+    ctx.globalAlpha = r.a;
+    ctx.lineWidth = r.lw;
+    ctx.beginPath();
+    ctx.moveTo(r.x1 - r.w1 * r.ro, r.y1); ctx.lineTo(r.x1 - r.w1 * r.ro, r.y1 - r.rh1);
+    ctx.moveTo(r.x1 + r.w1 * r.ro, r.y1); ctx.lineTo(r.x1 + r.w1 * r.ro, r.y1 - r.rh1);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
 
   // 隧道内蒙暗层（在最顶层之后才盖，避免覆盖主车/特效）
   if (inTunnel) drawTunnelDarken(ctx, W, H, 1);
