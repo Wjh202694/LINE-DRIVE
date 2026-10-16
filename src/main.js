@@ -19,7 +19,6 @@ import { clearFx, updateFx, updateShake, addShake, burstSparks, shatter } from '
 import { updatePalette, setTheme, consumeSpriteRebuild, THEME_ORDER, THEMES, PAL } from './palette.js';
 import { refreshSprites, spritesReady, onSpritesReady } from './sprites.js';
 import { initBg } from './bg.js';
-// import { startIntro, updateIntro } from './video.js';  // §6A.5 开场视频已移除（2026-10-12）
 import { drawMap, drawGallery, UNLOCKS, unlockedCount } from './menu.js';
 import { initAudio, resumeAudio, setEngineState, killEngine,
          sfxOvertake, sfxScrape, sfxHit, sfxCoin, sfxBoost, sfxLane,

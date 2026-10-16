@@ -2,3 +2,4 @@ node_modules/
 dist/
 .mimosa/
 *.log
+dist-single/

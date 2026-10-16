@@ -15,7 +15,7 @@ npm install
 npm run dev              # 开发服务器（默认 5173，本机常驻 5181）
 npm run preview          # 本地预览构建产物
 npm run build:pages      # GitHub Pages 构建（base=/LINE-DRIVE/）
-npm run build:single     # 单文件版 → dist-single/index.html（3.5MB，可离线双击玩）
+npm run build:single     # 单文件版 → dist-single/index.html（可离线双击玩；本地产物，不入仓库）
 ```
 
 **部署**：`git push origin master:main`（源码）+ 将 `dist/` 推到 `gh-pages` 分支（Pages 源）。
@@ -48,12 +48,14 @@ Pages 配置：Settings → Pages → Deploy from a branch → `gh-pages` / (roo
   - **匝道整条连续曲线**（一次贝塞尔路径）+ S 形双弧按键（方向随弧切换，按错飞出）
   - 匝道金币（每 3 段）、跨海大桥（桥塔/船队/侧风）、隧道（暗化/肋骨/顶灯）、
     长上下坡（上坡俯视/下坡仰视视角）、转向完成条（3/4 阈值判定）
-- **M4 UI/演出**：开场视频（会话一次+可跳过）、路线图（M：等距街区+节点蛇形+金色虚线+当前位置）、
+- **M4 UI/演出**：路线图（M：等距街区+节点蛇形+金色虚线+当前位置）、
   图纸收藏图鉴（G：12 页每 5km 解锁）、结算增强（破纪录金章/速度-里程曲线/解锁提示）。
 - **M5 音频+打磨**：WebAudio 全合成（引擎声跟随加速度：匀速静默/加速增大声/减速减小声 +
   9 种 SFX）、触控操作模型（上下半屏油门刹车/双指暂停）、竖屏提示、首局引导。
-- **M6 发布**：GitHub Pages 部署（标准站 2.8MB）+ 单文件离线版（3.5MB）、
+- **M6 发布**：GitHub Pages 部署（标准站 2.8MB）+ 单文件离线版（`npm run build:single` 本地生成）、
   素材压缩管线（9MB→1.9MB）。
+- **后续打磨（2026-10-12 ~ 10-16）**：移除开场视频（直接进入游戏）、修主车贴图闪烁、
+  风景打磨 5 阶段（龙门架浮空/道路虚影/人行道路灯高度与间距/场景图裁剪/金质路灯替换）。
 
 ## 结构
 
@@ -72,7 +74,6 @@ src/
   fx.js        火花/碎线/速度线/氮气尾焰/震动
   ui.js        HUD/标题/结算/完成条
   menu.js      路线图 + 图鉴（M4）
-  video.js     开场视频（M4）
   audio.js     WebAudio 合成音频（M5）
   input.js     键盘 + 触控
   main.js      状态机与主循环（window.__LD 调试钩子）
