@@ -9,20 +9,25 @@
 // §5#7：跨海大桥侧风扰动；§2.2-2.3：金币/加速带。
 import { CFG, clamp, lerp } from './config.js';
 import { buildTrack } from './track.js';
-import { setTrack, getTrack, wrapZ, segIndexAt, segAt } from './road.js';
+import { setTrack, getTrack, wrapZ, segAt } from './road.js';
 import { createPlayer, updatePlayer } from './car.js';
 import { Traffic } from './traffic.js';
 import { renderWorld } from './render.js';
 import { drawHUD, drawTitle, drawCrash, drawPause, drawJunction } from './ui.js';
 import { initInput, input, consumeActions } from './input.js';
-import { clearFx, updateFx, updateShake, addShake, burstSparks, shatter } from './fx.js';
+import { clearFx, updateFx, updateShake, addShake, burstSparks } from './fx.js';
 import { updatePalette, setTheme, consumeSpriteRebuild, THEME_ORDER, THEMES, PAL } from './palette.js';
-import { refreshSprites, spritesReady, onSpritesReady } from './sprites.js';
+import { refreshSprites, spritesReady } from './sprites.js';
 import { initBg } from './bg.js';
-import { drawMap, drawGallery, UNLOCKS, unlockedCount } from './menu.js';
+import { drawMap, drawGallery } from './menu.js';
+import { LS } from './store.js';
+import { doCrash } from './systems/crash.js';
+import { applySpeedLimits, applyEnvironment } from './systems/speed.js';
+import { updateSteering, checkSteerCrash } from './systems/steering.js';
+import { updateJunction, updateJunctionAlphas, laneChangeAllowed, updateLaneTarget } from './systems/junction.js';
 import { initAudio, resumeAudio, setEngineState, killEngine,
          sfxOvertake, sfxScrape, sfxHit, sfxCoin, sfxBoost, sfxLane,
-         sfxTurnFail, sfxMenu, sfxStart, toggleMute, audioDiag } from './audio.js';
+         sfxMenu, sfxStart, toggleMute, audioDiag } from './audio.js';
 
 const canvas = document.getElementById('game');
 const TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
@@ -40,19 +45,6 @@ function resize() {
     ctx.imageSmoothingQuality = 'high';
   }
 }
-
-const store = (() => {
-  try { const t = '__ldtest'; localStorage.setItem(t, '1'); localStorage.removeItem(t); return localStorage; }
-  catch { return null; }
-})();
-const LS = {
-  get best() { return store ? +store.getItem('linedrive.best') || 0 : 0; },
-  set best(v) { if (store) store.setItem('linedrive.best', v); },
-  get bestKm() { return store ? +store.getItem('linedrive.bestKm') || 0 : 0; },
-  set bestKm(v) { if (store) store.setItem('linedrive.bestKm', v); },
-  get runs() { return store ? +store.getItem('linedrive.runs') || 0 : 0; },
-  set runs(v) { if (store) store.setItem('linedrive.runs', v); },
-};
 
 const game = {
   state: 'title',
@@ -141,81 +133,6 @@ function toTitle() {
   game.startZ = -1;
   game.titleAnimT = 0;
   game.state = 'title';
-}
-
-function doCrash(car, reason) {
-  game.state = 'crashing';
-  game.crashT = 0;
-  game.player.crashed = true;
-  if (reason) game.failReason = reason;
-  game.runs++; LS.runs = game.runs;
-  game.newBest = game.score > game.best;
-  if (game.newBest) LS.best = Math.floor(game.score);
-  // M4：图纸收藏解锁检测（本局跨过 5km 门槛）
-  const oldKm = game.bestKm;
-  if (game.dist > game.bestKm) { game.bestKm = game.dist; LS.bestKm = game.dist; }
-  const nOld = unlockedCount(oldKm), nNew = unlockedCount(game.bestKm);
-  if (nNew > nOld) game.newUnlock = UNLOCKS[nNew - 1].name;
-  else game.newUnlock = null;
-  sfxHit();                                   // M5：撞毁金属音
-  const cam = game.cam;
-  const ppmP = (cam.depth / CFG.playerZ) * cam.halfW;
-  const bx = cam.cx + (game.player.x - cam.x) * (cam.depth / CFG.playerZ) * cam.halfW;
-  const by = cam.cy + (cam.depth / CFG.playerZ) * cam.height * cam.halfW;
-  const flat = !!reason;
-  shatter('player', bx, by, ppmP, 0.6, { flat });
-  if (car) {
-    car.dead = true;
-    const dz = wrapZ(car.z) - cam.z;
-    const s = cam.depth / Math.max(dz, 3);
-    shatter(car.type.key, cam.cx + s * (car.x - cam.x) * cam.halfW,
-            cam.cy + s * cam.height * cam.halfW, s * cam.halfW);
-  }
-  addShake(flat ? 10 : 14);
-}
-
-// —— 路口状态机 ——
-// 待转区：玩家变道 → 预选出口（保持 p.lane 不变，玩家自己控制车道）
-// 过门框：匝道玩家 p.lane=出口车道（已被玩家选好），直行玩家 p.lane=对应车道（也已被选好）
-// 分叉后主线路段少一车道（匝道占用），需要重新映射 lane 索引
-function updateJunction() {
-  const track = getTrack();
-  const p = game.player;
-  const pz = playerZabs();
-  const jw = track.junctionWindowAt(pz);
-  if (!jw) { game.jn = null; return; }
-  const { j, phase } = jw;
-  if (phase === 'wait') {
-    // 待转区：当前车道对应的出口 = 玩家选的出口（不再强制搬到外车道）
-    game.jn = { j, phase: 'wait', exit: track.exitForLane(j, p.lane) };
-  } else {
-    // 过分叉点：以当前车道锁定出口（道路几何已固定）
-    if (!j.chosen) j.chosen = track.exitForLane(j, p.lane);
-    const E = j.chosen;
-    game.jn = { j, phase: 'bend', exit: E };
-    if (pz >= j.forkZ && E.dir !== 0) {
-      p.brDir = E.dir;
-      // v5 环岛右绕：段类型不是 split，但出口语义是「新主干道」（track.js 里给出口打了 E.split）
-      if (E.split) {
-        // v4.10 分岔新主干道：收心点切换 player 到新主干道（brDir=0），但淡入慢慢发生
-        // - off=0 时几何重合：车辆不"被拉"，但渲染层把新主线 alpha 缓升起来
-        // - 整个吸收距离 = splitAbsorbM（5s × 当前速度，约 110-150m），期间 mlTarget 从 0 升到 1
-        // - 全程 p.brDir=0（玩家已在新主线）
-        if (pz >= j.doneZ - 4 && !p.absorbed) {
-          p.absorbed = true;
-          p.absorbedT = game.time;
-          p.brDir = 0;
-          const ri2 = track.roadInfoAt(pz);
-          p.lane = Math.floor((ri2.lanes - 1) / 2);
-          game.lastLanes = ri2.lanes;
-          j.chosen = null;
-        }
-      } else if (pz >= j.mergeZ - 6) {                   // 汇入型：直接切回主线（同时设 mlTarget=1 触发淡入）
-        p.brDir = 0;
-        j.chosen = null;
-      }
-    }
-  }
 }
 
 // —— AI 自动驾驶 ——
@@ -335,87 +252,16 @@ function tickOnce(dt) {
   const track = getTrack();
 
   if (game.state === 'title' || game.state === 'running') {
-    updateJunction();
-    // 强制转向区判定：匝道弯曲段（brDir != 0）/ S 弯主线（turn.dir != 0）
-    game.turn = track.turnAt(playerZabs(), p.brDir);
-    p.turn = game.turn;
-    // —— 转向完成条（v4.11）：按住方向键时按"走过的路程 ÷ 转向区总长"逐渐填充；出弯时 <3/4 判定失败 ——
-    // 全程按住 = 条随行驶从 0 平滑涨到 1（不是瞬间拉满）
-    {
-      const turnNow = game.turn;
-      const dirChanged = turnNow && p.lastTurnDir !== undefined && turnNow.dir !== p.lastTurnDir;
-      if (turnNow && (!p.inTurn || dirChanged)) {
-        // 进入转向区（或弯曲方向切换 = 新转向区）：扫描该区非 grace 段总长作为完成条满值基准
-        p.turnProg = 0;
-        p.inTurn = true;
-        p.turnZoneTotal = 100;
-        const segs2 = track.segs, N2 = segs2.length;
-        const i0 = Math.floor(wrapZ(playerZabs()) / CFG.segLen);
-        let len = 0;
-        for (let k = 0; k < 200; k++) {
-          const s2 = segs2[(i0 + k) % N2];
-          const tr = p.brDir ? (s2.turnRamp ? s2.turnRamp[p.brDir] : null) : s2.turn;
-          if (!tr || tr.dir !== turnNow.dir) break;
-          if (!tr.grace) len += CFG.segLen;
-        }
-        p.turnZoneTotal = Math.max(40, len);
-      }
-      if (turnNow) {
-        const holdOk = game.state === 'running'
-          ? ((turnNow.dir === -1 && input.left) || (turnNow.dir === 1 && input.right))
-          : true;                                              // 标题页 AI 演示恒成功
-        if (!turnNow.grace && holdOk) {
-          p.turnProg = clamp((p.turnProg || 0) + (p.speed * dt) / p.turnZoneTotal, 0, 1);
-        }
-        p.lastTurnDir = turnNow.dir;
-      } else if (p.inTurn) {
-        // 出弯判定：完成度 < 75% → 转向失败
-        if (game.state === 'running') {
-          if ((p.turnProg || 0) < 0.75) { sfxTurnFail(); doCrash(null, '转向力度不足'); }
-          else game.fovBreathT = 0.6;                            // 成功反馈：fov 呼吸
-        }
-        p.inTurn = false; p.turnProg = 0; p.lastTurnDir = undefined;
-      }
-    }
-    // —— 主线淡出/淡入通道（v4.5 + v4.9 + v4.10）——
-    {
-      let mlTarget = 1;
-      const onRamp = p.brDir !== 0 && game.jn && game.jn.phase === 'bend';
-      const jExit = game.jn ? game.jn.exit : null;
-      const absorbedSplit = p.absorbed && !!jExit && !!jExit.split;
-      if (onRamp) {
-        const j = game.jn.j;
-        // 用出口自己的 split 标志（v5 环岛右绕：段类型非 split 但出口语义是「新主干道」）
-        if (jExit && jExit.split) {
-          mlTarget = 0;                                  // v4.9 split 弯出段：老路淡出保持
-        } else {
-          const pzNow = playerZabs();
-          const distToMerge = ((j.mergeZ - pzNow) % track.length + track.length) % track.length;
-          const fadeDist = Math.max(60, p.speed * 3.2);   // 3 秒 × 当前速度（下限 60m）
-          mlTarget = distToMerge > fadeDist ? 0 : 1;
-        }
-      } else if (absorbedSplit) {
-        // v4.10 split 收心后：车已切到新主线，按时间 0→1 渐入（5s 略长于淡出的 3s，视觉感知淡入更慢）
-        const since = game.time - (p.absorbedT || game.time);
-        mlTarget = clamp(since / 5.0, 0, 1);
-      }
-      const rate = dt / 3;
-      game.mainlineAlpha += clamp(mlTarget - game.mainlineAlpha, -rate, rate);
-      // v5 环岛：分叉后主线要淡出（中央留给岛），但**背景不能跟着淡**——否则绕岛 600m 全程只剩两条白线、黑成一片。
-      // 普通匝道仍沿用旧行为（进匝道 3s 画面只剩匝道）。
-      const onRing = onRamp && game.jn.j.ring;
-      game.bgAlpha = onRing ? 1 : game.mainlineAlpha;
-    }
-    // 待转区内可变道选向；过门框后 laneL/R 锁死
-    if (game.jn && game.jn.phase === 'wait') {
-      // laneL/R 正常处理（让玩家换车道）
-    } else if (game.jn && game.jn.phase === 'bend') {
-      // 单车道匝道不可换道；环岛绕岛段是双车道，放开换道——那是内圈/外圈的选择入口
-      const rr = track.rampInfoAt(playerZabs(), p.brDir);
-      if (!rr || rr.lanes < 2) { laneL = false; laneR = false; }
-    } else {
-      // 非路口段正常变道
-    }
+    // —— 路口系统：出口选择状态机 → 转向完成条 → 主线淡出/淡入 ——
+    // 三件事原本在主循环里各占一大块、互相引用 game.jn；现按 systems/junction.js、
+    // systems/steering.js 的边界切开。顺序不能换：选路（j.chosen/brDir）决定
+    // 转向区判定，主线 alpha 又依赖 jn.phase。
+    const pzNow = playerZabs();
+    updateJunction(game, track, pzNow);
+    updateSteering(game, dt, track, pzNow);
+    updateJunctionAlphas(game, dt, track, pzNow);
+    // 待转区内可变道选向；过门框后单车道匝道锁死（环岛绕岛段是双车道，放开——那是内外圈的选择入口）
+    if (!laneChangeAllowed(game, track, pzNow)) { laneL = false; laneR = false; }
     // 车道数随路段变化时重映射当前车道索引（但 jn 期间跳过——匝道玩家车道已锁定）
     const ri = track.roadInfoAt(playerZabs());
     if (ri.lanes !== game.lastLanes && !game.jn) {
@@ -427,22 +273,8 @@ function tickOnce(dt) {
       game.lastLanes = ri.lanes;
     }
     p.laneMax = ri.lanes;
-    // 横向目标：匝道中心线 / 主线车道中心 / 隧道不变
-    let laneX;
-    if (p.brDir) {
-      const r = track.rampInfoAt(playerZabs(), p.brDir);
-      if (r) {
-        // v5 环岛：绕岛段是双车道，laneX 必须带车道偏移，否则玩家被钉死在环道中线上，
-        // 「内圈慢 / 外圈快」这条取舍就没有可选的左右两侧（单车道匝道偏移为 0，行为不变）。
-        p.laneMax = r.lanes;
-        if (p.lane > r.lanes - 1) p.lane = r.lanes - 1;
-        laneX = r.off + (p.lane - (r.lanes - 1) / 2) * CFG.laneWidth;
-      } else {
-        laneX = track.laneCenterAt(playerZabs(), p.lane);
-      }
-    } else {
-      laneX = track.laneCenterAt(playerZabs(), p.lane);
-    }
+    // 横向目标：匝道中心线（含环岛双车道的车道偏移）/ 主线车道中心 / 隧道不变
+    const laneX = updateLaneTarget(game, track, pzNow);
 
     if (game.state === 'title') {
       updatePlayer(p, aiInput(dt), dt, track.effCurveAt(game.cam.z + 60, p.brDir), laneX, ri.type === 'desert');
@@ -453,72 +285,11 @@ function tickOnce(dt) {
       updatePlayer(p, { up: input.up, down: input.down, nitro: input.nitro, laneL, laneR, holdDir: input.left ? -1 : input.right ? 1 : 0 },
                    dt, track.effCurveAt(game.cam.z + 60, p.brDir), laneX, ri.type === 'desert');
 
-      // —— §10.4 强制转向区撞栏判定 ——
-      // 三类情境：
-      // (A) 匝道弯曲段：grace 期外未按正确方向 → 外漂
-      // (B) 直行过**只有一个出口**的路口（无岔路可走）：按 ←/→ 即外漂。
-      //     有岔路（freeChoice）时 ←/→ 是合法的选道，不罚——否则正常变道会被判成撞毁。
-      // (C) S 弯主线：grace 期外未按正确方向 → 外漂
-      if (game.state === 'running') {
-        const inBranch = game.jn && game.jn.phase === 'bend';
-        if (game.turn && !game.turn.grace) {
-          // (A)(C)：有 turn 但没在 grace 期
-          const lim = game.turn.half - 0.45;
-          if (Math.abs(p.x - laneX) > lim) doCrash(null, '冲出弯道撞上护栏');
-        } else if (inBranch && !game.jn.j.freeChoice && game.jn.exit.dir === 0 && !laneL && !laneR) {
-          // (B)：直行时玩家按了 ←/→ → laneL/laneR 是边沿事件；
-          //     但玩家也可能一直按住 ←/→ 方向键持续"提醒"，所以用 input.left/input.right 实时判定
-          if ((input.left || input.right) && !p.brDir) {
-            const lim = ri.half - 0.45;
-            if (Math.abs(p.x - laneX) > 0.6) doCrash(null, '直行通过禁止按左右键');
-          }
-        }
-      }
-
-      // 沙漠公路出界减速
-      if (ri.type === 'desert' && Math.abs(p.x) > ri.half - 0.55) {
-        p.speed = Math.min(p.speed, CFG.maxSpeed * 0.35);
-      }
-      // 跨海大桥侧风
-      if (ri.type === 'bridge') {
-        p.drift += Math.sin(game.time * 0.6 + 2) * CFG.bridgeWind * dt * (p.speed / CFG.maxSpeed);
-      }
-      // v5 环岛 §4.1 内圈慢外圈快：绕岛段是双车道，靠中央岛那侧（内圈）限 100，外侧限 150。
-      // 外圈不减速 → 抢时间；内圈过弯半径小更稳但慢。这是环岛路段唯一的核心取舍。
-      game.ringLane = track.ringLaneAt(playerZabs(), p.brDir, p.x);
-      if (game.ringLane) {
-        const cap = game.ringLane === 'inner' ? CFG.ringInnerCap : CFG.ringOuterCap;
-        // 逼近 + 硬钳：只做指数逼近的话稳态会停在限速以下好几码（油门一直在顶），
-        // HUD 上写着「限速 150」而表针只到 144，玩家会以为读数坏了。
-        if (p.speed > cap) {
-          p.speed += (cap - p.speed) * Math.min(1, dt * 6);
-          if (p.speed > cap) p.speed = cap;
-        }
-      }
-
-      // —— v5.4 §4.2 让行：环道上同车道已有车 → 收油跟上去 ——
-      // 判定覆盖整条环道匝道（含绕岛段）：让行在这里读起来就是「跟在环岛车后面进环岛」，
-      // 而不是抽象的礼让——玩家要做的选择是「抢空车道」还是「跟着一辆走」。
-      // 目标是**前车的速度**而不是一个固定低速：环岛的真实约束是车流而不是让行线，
-      // 收油到 60 会把玩家钉在爬行速度上（实测整段绕岛都开不上去），读起来像路障而不是让行。
-      // +slack：比前车快一点点，慢慢贴上去超掉它——让行才是「一段一段」的而不是永久跟车。
-      game.ringYield = 0;
-      const inRingJ = game.jn && game.jn.j.ring && game.jn.phase === 'bend';
-      if (inRingJ) {
-        const lead = game.traffic.ringCarAhead(playerZabs(), p.brDir, p.lane);
-        if (lead) {
-          game.ringYield = lead.d;
-          // 本车道限速（还没进绕岛段就没有内/外圈之分，按主线限速）
-          const laneCap = game.ringLane === 'inner' ? CFG.ringInnerCap
-                        : game.ringLane === 'outer' ? CFG.ringOuterCap
-                        : CFG.maxSpeed;
-          const yCap = Math.min(laneCap, lead.speed + CFG.ringYieldSlack);
-          if (p.speed > yCap) {
-            p.speed += (yCap - p.speed) * Math.min(1, dt * 3);
-            if (p.speed > yCap) p.speed = yCap;
-          }
-        }
-      }
+      // —— §10.4 违规判定（转向系统）+ 限速/外力通道（速度系统）——
+      // 判定必须在 updatePlayer 之后（要看这一帧车实际偏到哪了），限速也必须在之后（钳速）。
+      checkSteerCrash(game, laneX, ri, laneL, laneR);
+      applySpeedLimits(game, dt, ri, pzNow);
+      applyEnvironment(game, dt, ri);
 
       advanceWorld(dt);
       game.dist += p.speed * dt;
@@ -741,7 +512,7 @@ function processEvent(ev) {
     } else {
       game.impacts++;
       game.combo = 0;
-      if (game.impacts > CFG.maxImpacts) doCrash(ev.car, null);
+      if (game.impacts > CFG.maxImpacts) doCrash(game, ev.car, null);
       else {
         p.speed = Math.max(p.speed * CFG.hitFloor, ev.car.speed - 1);
         p.invuln = CFG.hitInvuln;
@@ -783,7 +554,7 @@ window.__LD = {
       if (s.type === type) { window.__LD.goto(s.startZ + 50); return; }
     }
   },
-  crash: (reason) => doCrash(null, reason || '调试撞毁'),
+  crash: (reason) => doCrash(game, null, reason || '调试撞毁'),
   rebuild: (seed) => {
     // 重新构建轨道需刷新页面（ESM 模块缓存）；这里仅跳转
     window.__LD.goto(0);
