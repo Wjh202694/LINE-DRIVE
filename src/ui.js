@@ -442,12 +442,32 @@ export function drawJunction(ctx, W, H, game) {
     return;
   }
 
+  // v5 环岛 §4.1：绕岛段把「内圈慢 / 外圈快」这条取舍摆在屏幕上——
+  // 限速是隐形的（只是忽然开不上去），必须写出来玩家才知道自己选了什么。
+  if (game.ringLane) {
+    const inner = game.ringLane === 'inner';
+    ctx.font = MONO(14, 700);
+    ctx.fillStyle = inner ? PAL.line : PAL.gold;
+    ctx.globalAlpha = 0.92;
+    ctx.fillText(inner ? '内圈 · 限速 100' : '外圈 · 限速 150', cx, 96);
+    ctx.globalAlpha = 1;
+  } else if (game.ringYield) {
+    // v5.4 §4.2 让行：环岛上有车 → 写出来。不写的话玩家只会觉得「这车怎么自己慢了」。
+    // 金色（不用红）：让行是常规路况，不是危险。
+    ctx.font = MONO(14, 700);
+    ctx.fillStyle = PAL.gold;
+    ctx.globalAlpha = 0.92 + 0.08 * Math.sin(game.time * 9);   // 轻微呼吸，闪烁太狠像警报
+    ctx.fillText('让行 · 环岛有车', cx, 96);
+    ctx.globalAlpha = 1;
+  }
+
   if (!jn) { ctx.restore(); return; }
   const j = jn.j;
 
   if (jn.phase === 'wait') {
     ctx.font = MONO(13, 700); ctx.fillStyle = PAL.gold; ctx.globalAlpha = 0.9;
-    ctx.fillText('前方岔路 · 车道选向', cx, 116);
+    // 单出口路口（仅直行）不是「岔路」：写错会让玩家以为要选道，然后按 ←/→ 直接撞毁
+    ctx.fillText(j.freeChoice ? '前方岔路 · 车道选向' : '前方路口 · 仅直行', cx, 116);
     ctx.font = MONO(12); ctx.fillStyle = PAL.line; ctx.globalAlpha = 0.85;
     let yy = 142;
     for (const e of j.exits) {
@@ -467,7 +487,15 @@ export function drawJunction(ctx, W, H, game) {
   } else if (jn.phase === 'bend') {
     const E = jn.exit;
     ctx.font = MONO(12); ctx.fillStyle = PAL.line; ctx.globalAlpha = E.dir !== 0 ? 0.75 : 0.55;
-    ctx.fillText(E.dir !== 0 ? `岔路 ${E.label} · 匝道行驶中` : '岔路直行通过 · 车道锁定', cx, 116);
+    if (E.dir !== 0) {
+      ctx.fillText(`岔路 ${E.label} · 匝道行驶中`, cx, 116);
+    } else if (!j.freeChoice) {
+      // 唯一出口的路段：左右键真的会判撞毁，必须提前写出来（规则要对玩家可见才算公平）
+      ctx.fillStyle = PAL.gold; ctx.globalAlpha = 0.95;
+      ctx.fillText('仅直行 · 禁止按 ← →', cx, 116);
+    } else {
+      ctx.fillText('岔路直行通过 · 车道锁定', cx, 116);
+    }
     ctx.globalAlpha = 1;
   }
   ctx.restore();

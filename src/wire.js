@@ -3,7 +3,7 @@
 // 由规格表生成，与 §7A.2 T0 顶点/棱线表同源；超车/转向时随 viewYaw 浮现侧面。
 // 红利：这些折线直接并入 §5A.3 撞毁碎线数据源（车毁=画崩 共用数据）。
 
-export const CAR_SPECS = {
+const CAR_SPECS = {
   player: { len: 4.4, w: 1.94 },
   sedan:  { len: 4.6, w: 1.84 },
   truck:  { len: 7.6, w: 2.45 },

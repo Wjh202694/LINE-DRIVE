@@ -72,6 +72,7 @@ const game = {
   best: LS.best, bestKm: LS.bestKm, runs: LS.runs,
   themeT: CFG.themeFirst, themeToastT: 0, titleAnimT: 0,
   mainlineAlpha: 1,                       // 主线渲染 alpha（进匝道 3s 淡出 / 汇入前 3s 淡入）
+  ringLane: null, ringYield: 0,           // v5.4：内/外圈判定 / 让行中的前方环岛车距离 m
   lastLanes: 3, lastSecName: '城市街道', sectToastT: 0, sectToastName: '', bgScroll: 0,
   aiLaneT: 2, lastCoinSeg: -1, lastBoostSeg: -1,
   pickFlashT: -9, pickKind: '',
@@ -119,6 +120,8 @@ function beginRun() {
   game.impacts = 0; game.failReason = null;
   game.jn = null; game.turn = null;
   game.mainlineAlpha = 1;
+  game.ringLane = null;
+  game.ringYield = 0;
   game.lastCoinSeg = -1; game.lastBoostSeg = -1;
   game.curve = []; game.curveT = 0;
   game.newUnlock = null;
@@ -192,7 +195,8 @@ function updateJunction() {
     game.jn = { j, phase: 'bend', exit: E };
     if (pz >= j.forkZ && E.dir !== 0) {
       p.brDir = E.dir;
-      if (j.split) {
+      // v5 环岛右绕：段类型不是 split，但出口语义是「新主干道」（track.js 里给出口打了 E.split）
+      if (E.split) {
         // v4.10 分岔新主干道：收心点切换 player 到新主干道（brDir=0），但淡入慢慢发生
         // - off=0 时几何重合：车辆不"被拉"，但渲染层把新主线 alpha 缓升起来
         // - 整个吸收距离 = splitAbsorbM（5s × 当前速度，约 110-150m），期间 mlTarget 从 0 升到 1
@@ -241,8 +245,8 @@ function aiInput(dt) {
     let holdDir = input.left ? -1 : input.right ? 1 : 0;
     const tz = track.turnAt(pz, p.brDir);
     if (tz) holdDir = tz.dir;
-    // 主线直行过岔路期间：AI 不按左右
-    if (game.jn && game.jn.phase === 'branch' && game.jn.exit.dir === 0) holdDir = 0;
+    // 直行过单出口路口期间：AI 不按左右（没有岔路，方向键没有语义）
+    if (game.jn && game.jn.phase === 'bend' && !game.jn.j.freeChoice && game.jn.exit.dir === 0) holdDir = 0;
     return {
     up: p.speed < CFG.maxSpeed * 0.55, down: false, nitro: false,
     laneL: false, laneR: false, holdDir,
@@ -377,10 +381,12 @@ function tickOnce(dt) {
     {
       let mlTarget = 1;
       const onRamp = p.brDir !== 0 && game.jn && game.jn.phase === 'bend';
-      const absorbedSplit = p.absorbed && game.jn && game.jn.j && game.jn.j.split;
+      const jExit = game.jn ? game.jn.exit : null;
+      const absorbedSplit = p.absorbed && !!jExit && !!jExit.split;
       if (onRamp) {
         const j = game.jn.j;
-        if (j.split) {
+        // 用出口自己的 split 标志（v5 环岛右绕：段类型非 split 但出口语义是「新主干道」）
+        if (jExit && jExit.split) {
           mlTarget = 0;                                  // v4.9 split 弯出段：老路淡出保持
         } else {
           const pzNow = playerZabs();
@@ -395,12 +401,18 @@ function tickOnce(dt) {
       }
       const rate = dt / 3;
       game.mainlineAlpha += clamp(mlTarget - game.mainlineAlpha, -rate, rate);
+      // v5 环岛：分叉后主线要淡出（中央留给岛），但**背景不能跟着淡**——否则绕岛 600m 全程只剩两条白线、黑成一片。
+      // 普通匝道仍沿用旧行为（进匝道 3s 画面只剩匝道）。
+      const onRing = onRamp && game.jn.j.ring;
+      game.bgAlpha = onRing ? 1 : game.mainlineAlpha;
     }
     // 待转区内可变道选向；过门框后 laneL/R 锁死
     if (game.jn && game.jn.phase === 'wait') {
       // laneL/R 正常处理（让玩家换车道）
-    } else if (game.jn && game.jn.phase === 'branch') {
-      laneL = false; laneR = false;          // 匝道单车道不可换道
+    } else if (game.jn && game.jn.phase === 'bend') {
+      // 单车道匝道不可换道；环岛绕岛段是双车道，放开换道——那是内圈/外圈的选择入口
+      const rr = track.rampInfoAt(playerZabs(), p.brDir);
+      if (!rr || rr.lanes < 2) { laneL = false; laneR = false; }
     } else {
       // 非路口段正常变道
     }
@@ -419,7 +431,15 @@ function tickOnce(dt) {
     let laneX;
     if (p.brDir) {
       const r = track.rampInfoAt(playerZabs(), p.brDir);
-      laneX = r ? r.off : track.laneCenterAt(playerZabs(), p.lane);
+      if (r) {
+        // v5 环岛：绕岛段是双车道，laneX 必须带车道偏移，否则玩家被钉死在环道中线上，
+        // 「内圈慢 / 外圈快」这条取舍就没有可选的左右两侧（单车道匝道偏移为 0，行为不变）。
+        p.laneMax = r.lanes;
+        if (p.lane > r.lanes - 1) p.lane = r.lanes - 1;
+        laneX = r.off + (p.lane - (r.lanes - 1) / 2) * CFG.laneWidth;
+      } else {
+        laneX = track.laneCenterAt(playerZabs(), p.lane);
+      }
     } else {
       laneX = track.laneCenterAt(playerZabs(), p.lane);
     }
@@ -436,16 +456,17 @@ function tickOnce(dt) {
       // —— §10.4 强制转向区撞栏判定 ——
       // 三类情境：
       // (A) 匝道弯曲段：grace 期外未按正确方向 → 外漂
-      // (B) 主线直行过岔路：phase='branch' 且车道对应的是直行出口 → 按 ←/→ 即外漂
+      // (B) 直行过**只有一个出口**的路口（无岔路可走）：按 ←/→ 即外漂。
+      //     有岔路（freeChoice）时 ←/→ 是合法的选道，不罚——否则正常变道会被判成撞毁。
       // (C) S 弯主线：grace 期外未按正确方向 → 外漂
       if (game.state === 'running') {
-        const inBranch = game.jn && game.jn.phase === 'branch';
+        const inBranch = game.jn && game.jn.phase === 'bend';
         if (game.turn && !game.turn.grace) {
           // (A)(C)：有 turn 但没在 grace 期
           const lim = game.turn.half - 0.45;
           if (Math.abs(p.x - laneX) > lim) doCrash(null, '冲出弯道撞上护栏');
-        } else if (inBranch && game.jn.exit.dir === 0 && !laneL && !laneR) {
-          // (B)：直行过岔路时玩家按了 ←/→ → laneL/laneR 是边沿事件；
+        } else if (inBranch && !game.jn.j.freeChoice && game.jn.exit.dir === 0 && !laneL && !laneR) {
+          // (B)：直行时玩家按了 ←/→ → laneL/laneR 是边沿事件；
           //     但玩家也可能一直按住 ←/→ 方向键持续"提醒"，所以用 input.left/input.right 实时判定
           if ((input.left || input.right) && !p.brDir) {
             const lim = ri.half - 0.45;
@@ -461,6 +482,42 @@ function tickOnce(dt) {
       // 跨海大桥侧风
       if (ri.type === 'bridge') {
         p.drift += Math.sin(game.time * 0.6 + 2) * CFG.bridgeWind * dt * (p.speed / CFG.maxSpeed);
+      }
+      // v5 环岛 §4.1 内圈慢外圈快：绕岛段是双车道，靠中央岛那侧（内圈）限 100，外侧限 150。
+      // 外圈不减速 → 抢时间；内圈过弯半径小更稳但慢。这是环岛路段唯一的核心取舍。
+      game.ringLane = track.ringLaneAt(playerZabs(), p.brDir, p.x);
+      if (game.ringLane) {
+        const cap = game.ringLane === 'inner' ? CFG.ringInnerCap : CFG.ringOuterCap;
+        // 逼近 + 硬钳：只做指数逼近的话稳态会停在限速以下好几码（油门一直在顶），
+        // HUD 上写着「限速 150」而表针只到 144，玩家会以为读数坏了。
+        if (p.speed > cap) {
+          p.speed += (cap - p.speed) * Math.min(1, dt * 6);
+          if (p.speed > cap) p.speed = cap;
+        }
+      }
+
+      // —— v5.4 §4.2 让行：环道上同车道已有车 → 收油跟上去 ——
+      // 判定覆盖整条环道匝道（含绕岛段）：让行在这里读起来就是「跟在环岛车后面进环岛」，
+      // 而不是抽象的礼让——玩家要做的选择是「抢空车道」还是「跟着一辆走」。
+      // 目标是**前车的速度**而不是一个固定低速：环岛的真实约束是车流而不是让行线，
+      // 收油到 60 会把玩家钉在爬行速度上（实测整段绕岛都开不上去），读起来像路障而不是让行。
+      // +slack：比前车快一点点，慢慢贴上去超掉它——让行才是「一段一段」的而不是永久跟车。
+      game.ringYield = 0;
+      const inRingJ = game.jn && game.jn.j.ring && game.jn.phase === 'bend';
+      if (inRingJ) {
+        const lead = game.traffic.ringCarAhead(playerZabs(), p.brDir, p.lane);
+        if (lead) {
+          game.ringYield = lead.d;
+          // 本车道限速（还没进绕岛段就没有内/外圈之分，按主线限速）
+          const laneCap = game.ringLane === 'inner' ? CFG.ringInnerCap
+                        : game.ringLane === 'outer' ? CFG.ringOuterCap
+                        : CFG.maxSpeed;
+          const yCap = Math.min(laneCap, lead.speed + CFG.ringYieldSlack);
+          if (p.speed > yCap) {
+            p.speed += (yCap - p.speed) * Math.min(1, dt * 3);
+            if (p.speed > yCap) p.speed = yCap;
+          }
+        }
       }
 
       advanceWorld(dt);
@@ -545,7 +602,7 @@ function tickOnce(dt) {
   const crNow = track.effCurveAt(game.cam.z + 30, p.brDir);
   const crFar = track.effCurveAt(game.cam.z + 90, p.brDir);
   const effCr = p.brDir ? (crNow + crFar) * 0.5 : crNow;
-  const inTurn = !!(game.turn || (game.jn && game.jn.phase === 'branch' && p.brDir));
+  const inTurn = !!(game.turn || (game.jn && game.jn.phase === 'bend' && p.brDir));
   const gain = inTurn ? CFG.curveGain : 1;
   // 90° 大弯每 5m 段 crs 累加 ≈ 0.3 rad/m；钳制 ±0.12 避免主车被视线偏移推出画面
   const yawT = clamp(-effCr * (p.speed / CFG.maxSpeed) * 8.0 * gain, -0.12, 0.12);

@@ -332,7 +332,7 @@ const TUNNEL_RIB = { w: 0.2, h: 4.0, lw: 0.05,
   ],
 };
 
-export const DEFS = {
+const DEFS = {
   player: PLAYER_BM, playerVec: PLAYER, sedan: SEDAN, truck: TRUCK, bus: BUS,
   sedan_q: SEDAN_Q, truck_q: TRUCK_Q, bus_q: BUS_Q,
   lamp: LAMP, post: POST, sign: SIGN, oncoming: ONCOMING, tunnel_rib: TUNNEL_RIB,
@@ -385,7 +385,6 @@ function registerBitmap(key, url, worldW, opts = {}) {
 
 // —— 就绪查询/订阅 API（main.js 用来在 title 状态等待位图加载，避免起跑后第一帧用 fallback 矢量版）——
 export function spritesReady() { return bitmapsReadyFlag; }
-export function pendingBitmapCount() { return pendingBitmaps; }
 export function onSpritesReady(cb) {
   if (bitmapsReadyFlag) { try { cb(); } catch { /* 忽略 */ } return () => {}; }
   readyCallbacks.push(cb);

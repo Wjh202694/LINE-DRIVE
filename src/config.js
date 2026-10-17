@@ -60,11 +60,30 @@ export const CFG = {
   splitHoldN: 30,         // 分岔平直段数（150m，无按键自由行驶）
   splitRetN: 56,          // 分岔收心+扩展段数（280m，off→0 且 half→6.35）
   steerCurve: 0.011,      // S 弯峰值曲率（每段朝向增量；缓弧 ~23°）
-  steerDisp: 1.4,         // 转向区横向位移 m（保留参数）
+  // —— v5 环岛（jRing）：三岔环岛——直行 / 左绕（汇回）/ 右绕（开新主干道）——
+  ringRampA: 26,          // 环岛弯出段段数（130m，略短于普通匝道的 160m——环道只偏 20m）
+  ringHoldN: 46,          // 绕岛段段数（230m，两条匝道共用）
+  ringCurve: 0.006,       // 绕岛段持续曲率（每段朝向增量，46 段累计约 16°）
+  ringDiv: 20,            // 绕行段横向偏移 m（左右同值——真环岛的两条环道对称；
+                          // 用 forkDiv 30 / splitDiv 20 会把中央岛推到 57m 外，屏幕上贴到边）
+  ringHalf: 5.4,          // 绕岛段半宽（双车道 3.7×2 + 路肩）
+  ringInnerCap: 27.8,     // 内圈（靠岛侧）限速 100 km/h —— §4.1 内圈慢
+  ringOuterCap: 41.7,     // 外圈限速 150 km/h —— 外圈快
+  ringYieldRange: 90,    // 让行判定距离 m（同车道前方有环岛车则自动减速）
+  ringYieldSlack: 3,      // 让行时允许比前车快多少 m/s（慢慢贴上去超掉它，让行才是一段一段的）
+  ringTrafficCount: 4,    // 环岛上的车数（两条环道合计目标数）
+  // 车位表 [环道方向, 车道, 前距 m]（相对玩家，随玩家滚动补车）。
+  // 内圈车放**前面**、外圈车放它后面 → 外圈车限速高，几秒内追上内圈车排队，
+  // 于是「外圈 150」这条卖点经常兑现不了：想抢时间就得盯着队尾空档、随时变道。
+  // 车道号随方向翻转：中央岛在匝道偏移的反方向，所以 dir<0 的内圈是 lane1、dir>0 的内圈是 lane0。
+  ringTrafficSlots: [[-1, 1, 130], [1, 0, 130], [-1, 0, 55], [1, 1, 55]],
+  ringTrafficLead: 420,   // 提前多远开始往环岛里放车 m（玩家还在待转区外就该看见车了）
+  ringTrafficTail: 120,    // 驶过环岛后仍维持车流 m
+  ringIslandR: 14,        // 中央岛椭圆长半轴 m（渲染用）——两环道内缘之间净宽 36.5m
+  ringIslandCx: 0,        // 岛盘中心横向偏移 m（左右环道对称时为 0）
   steerGrace: 0.35,       // 进入强制转向区后允许的反应宽限 s
   steerDrift: 3.5,        // 松手/按反时的向外漂移速度 m/s（~1.4s 撞栏）
   curveGain: 1.6,         // 转向区视角偏航增益
-  barrierX: 5.35,         // 撞栏边界（保留参数）
 
   // —— 金币线 / 加速带（§2.2/§2.3）——
   coinScore: 20,          // 金币 +20/枚
@@ -81,7 +100,6 @@ export const CFG = {
 };
 
 export const ROAD_HALF = (CFG.lanes * CFG.laneWidth) / 2 + CFG.shoulder; // 6.35m
-export const LANE_C = (i) => (i - (CFG.lanes - 1) / 2) * CFG.laneWidth;
 
 export const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 export const lerp = (a, b, t) => a + (b - a) * t;

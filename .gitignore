@@ -3,3 +3,6 @@ dist/
 .mimosa/
 *.log
 dist-single/
+
+# QA 截图：本地视觉验收产物，不入库（244 张 / 37MB）
+tools/qa/

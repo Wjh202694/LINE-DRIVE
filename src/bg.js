@@ -73,7 +73,6 @@ export function initBg() {
   load(shipBUrl, 'shipB', 640);
   load(lighthouseUrl, 'lighthouse', 512);
 }
-export function bgRefresh() { tints.clear(); }
 
 // 程序山脊（兜底）/ 沙丘：确定性正弦叠加
 function ridgeY(wx, seed, f) {

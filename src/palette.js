@@ -1,6 +1,8 @@
 // palette.js — 全局调色板（§3.2A 四主题昼夜流转）
 // 「夜→晨→昼→暮」环形切换，3s RGB 逐帧插值；插值结果按 1/21 步进量化，
 // 量化跨步时置 dirty → main 调 refreshSprites() 重建 sprite（§10.1 根因 4：避免逐帧微闪）。
+import { CFG } from './config.js';
+
 export const THEME_ORDER = ['ink', 'blue', 'paper', 'dusk'];
 
 export const THEMES = {
@@ -20,7 +22,7 @@ const KEYS = ['bg', 'line', 'gold', 'danger'];
 // 对外只读的字符串字段（每帧同步，渲染层直接取用）
 export const PAL = { key: 'ink', name: '墨夜', bg: '#000000', line: '#FFFFFF', gold: '#D4AF37', danger: '#FF3B30' };
 
-const state = { from: THEMES.ink, to: THEMES.ink, t: 1, dur: 3 };
+const state = { from: THEMES.ink, to: THEMES.ink, t: 1, dur: CFG.themeDur };
 const cur = {};                       // k -> [r,g,b] 连续插值
 let sig = '';                         // 量化签名
 let dirty = false;                    // 跨步 → sprite 需重建

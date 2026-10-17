@@ -1,6 +1,6 @@
 // input.js — 键盘 + 触屏（桌面：←→↑↓+空格；移动：左右半屏滑动转向、长按加速、双击氮气）
 export const input = { up: false, down: false, nitro: false, left: false, right: false };
-export const actions = [];            // 边沿事件队列：'start' 'pause' 'laneL' 'laneR' 'nitroBurst' 'title' 'toggleFps' 'curveMode'
+const actions = [];            // 边沿事件队列：'start' 'pause' 'laneL' 'laneR' 'nitroBurst' 'title' 'toggleFps' 'curveMode'
 export function consumeActions() { return actions.splice(0); }
 
 let touchId = null, touchX0 = 0, touchT0 = 0, swiped = false, lastTapT = 0, holdTimer = null;

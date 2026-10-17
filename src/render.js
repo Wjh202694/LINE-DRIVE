@@ -181,7 +181,7 @@ function drawOncoming(ctx, cam, frac, game, D) {
     const ppm = lerp(PS[k0], PS[k0 + 1], f) * cam.halfW;
     const t = zr / (D * CFG.segLen);
     const a = (CFG.fogNear + (CFG.fogFar - CFG.fogNear) * t * t) * (zr < 14 ? zr / 14 : 1);
-    drawSprite(ctx, 'oncoming', sx, sy, ppm, a * (game.mainlineAlpha != null ? game.mainlineAlpha : 1), false);
+    drawSprite(ctx, 'oncoming', sx, sy, ppm, a * (game.bgAlpha != null ? game.bgAlpha : (game.mainlineAlpha != null ? game.mainlineAlpha : 1)), false);
   }
 }
 
@@ -190,7 +190,7 @@ function drawShips(ctx, cam, frac, game, D) {
   const track = getTrack();
   const segs = track.segs;
   const baseIdx = Math.floor(cam.z / CFG.segLen);
-  const mlA = game.mainlineAlpha != null ? game.mainlineAlpha : 1;
+  const mlA = game.bgAlpha != null ? game.bgAlpha : (game.mainlineAlpha != null ? game.mainlineAlpha : 1);
   for (let k = 1; k <= D; k++) {
     const zrel = (k - frac) * CFG.segLen;
     if (zrel < 3 || zrel > Math.min(580, D * CFG.segLen)) continue;
@@ -290,7 +290,7 @@ export function renderWorld(ctx, W, H, game) {
   }
 
   // 背景层（隧道内不画远景）
-  if (!inTunnel) drawBackground(ctx, W, H, cam.cy, game, track, game.mainlineAlpha != null ? game.mainlineAlpha : 1);
+  if (!inTunnel) drawBackground(ctx, W, H, cam.cy, game, track, game.bgAlpha != null ? game.bgAlpha : (game.mainlineAlpha != null ? game.mainlineAlpha : 1));
 
   // 段循环：投影 + 曲率累积 + 坡道高程
   let x = 0, dx = -(baseSeg.curve * frac);
@@ -348,12 +348,16 @@ export function renderWorld(ctx, W, H, game) {
     const t = k / D;
     let a = CFG.fogNear + (CFG.fogFar - CFG.fogNear) * t * t;
     if (hideNear >= 0 && k < hideNear + 8) a = Math.min(1, a * 1.6);
+    const aRing = a;                       // v5 环岛标记只用大气透视，不吃 mainlineAlpha（主线淡出时岛盘/让行标线仍在）
     // v4.5：主线渲染 alpha = fog × mainlineAlpha（玩家进匝道后主线 3s 淡出，汇入前 3s 淡入）
     a *= (game.mainlineAlpha != null ? game.mainlineAlpha : 1);
     const lw = Math.max(0.7, (CFG.lwNear + (CFG.lwFar - CFG.lwNear) * t) * scr);
     const seg = segs[(baseIdx + k) % N];
+    const segIdx = (baseIdx + k) % N;
+    const ringCarsHere = game.traffic.ringBySeg.get(segIdx);
     // 主线完全淡出时跳过主线段绘制（匝道改为段循环后整体渲染，不再依赖本循环）
-    if (a < 0.015) continue;
+    // —— 例外：环岛标记（岛盘/斑马线/让行三角）与环岛车不受主线淡出影响
+    if (a < 0.015 && !seg.ringIsland && !seg.ringZebra && !seg.ringYield && !ringCarsHere) continue;
 
     ctx.strokeStyle = PAL.line;
     ctx.globalAlpha = a;
@@ -507,6 +511,72 @@ export function renderWorld(ctx, W, H, game) {
       ctx.lineCap = 'butt';
     }
 
+    // —— v5 环岛标记：中央岛盘（三道同心弧）+ 人行横道 + 让行三角 ——
+    // 半宽由 track.js 预存（sin 包络：近端 0 → 中段 ringIslandR → 远端 0），左右缘自然收拢成椭圆；
+    // 同 §3.2 规则用「中点作路径点 + 段端点作控制点」的二次贝塞尔，不做多段直线拼曲线。
+    if (w1 > 2.5 && (seg.ringIsland || seg.ringZebra || seg.ringYield)) {
+      const ppm = PS[k] * cam.halfW;                     // 该深度下 1m 的像素数
+      ctx.strokeStyle = PAL.line;                        // 待转区箭头的收尾没复位颜色，这里必须自己设
+      if (seg.ringIsland) {
+        const sNext = segs[(baseIdx + k + 1) % N];
+        const sPrev = havePrev ? segs[(baseIdx + k - 1 + N) % N] : null;
+        const cxPx = CFG.ringIslandCx * ppm;             // 岛盘横向偏置（两条匝道不对称）
+        const hPx = (sg) => (PW[sg.k] / sg.half) * (sg.isl || 0);
+        const nxt = { k: k + 1, half: sNext.half, isl: sNext.ringIslandHalf || 0 };
+        const prv = sPrev ? { k: k - 1, half: sPrev.half, isl: sPrev.ringIslandHalf || 0 } : null;
+        ctx.globalAlpha = aRing * 0.95;
+        ctx.lineWidth = Math.max(0.8, lw * 1.15);
+        ctx.beginPath();
+        // 三道同心弧：单圈只是一条「路缘」，读不出岛；圈太密又变成黑胶唱片。0.72/0.45 的间距
+        // 约 3~4m，正好是俯视平面图上那种一圈一圈的绿化带。
+        for (const sc of [1, 0.72, 0.45]) {
+          const L1 = x1 + cxPx - hPx({ k, half: seg.half, isl: seg.ringIslandHalf }) * sc;
+          const R1 = x1 + cxPx + hPx({ k, half: seg.half, isl: seg.ringIslandHalf }) * sc;
+          const L2 = x2 + cxPx - hPx(nxt) * sc, R2 = x2 + cxPx + hPx(nxt) * sc;
+          if (prv) {
+            const L0 = px0 + cxPx - hPx(prv) * sc, R0 = px0 + cxPx + hPx(prv) * sc;
+            ctx.moveTo((L0 + L1) / 2, (py0 + y1) / 2);
+            ctx.quadraticCurveTo(L1, y1, (L1 + L2) / 2, (y1 + y2) / 2);
+            ctx.moveTo((R0 + R1) / 2, (py0 + y1) / 2);
+            ctx.quadraticCurveTo(R1, y1, (R1 + R2) / 2, (y1 + y2) / 2);
+          } else {
+            ctx.moveTo(L1, y1); ctx.lineTo(L2, y2);
+            ctx.moveTo(R1, y1); ctx.lineTo(R2, y2);
+          }
+        }
+        ctx.stroke();
+      }
+      // 人行横道：整条画在标记段上——4 条横贯车道的短带（垂直于行车方向 = 屏幕上的横线）
+      if (seg.ringZebra) {
+        ctx.globalAlpha = aRing * 0.75;
+        ctx.lineWidth = Math.max(0.7, lw * 0.8);
+        ctx.beginPath();
+        for (let d = 0; d < 4; d++) {
+          const yy = y1 - d * 1.1 * ppm;
+          ctx.moveTo(x1 - w1 * 0.92, yy); ctx.lineTo(x1 + w1 * 0.92, yy);
+        }
+        ctx.stroke();
+      }
+      // 让行三角：整排画在标记段上——出口两个车道各一个空心三角，顶点朝来车（尺寸按米换算，不按路宽比例）
+      if (seg.ringYield) {
+        const laneOff = ((seg.half - 0.9) * 2 / seg.lanes) * ppm;   // 出口车道中心横向距离
+        const hgt = 1.5 * ppm, wid = 0.55 * ppm;
+        ctx.globalAlpha = aRing * 0.9;
+        ctx.lineWidth = Math.max(0.9, lw * 1.1);
+        ctx.beginPath();
+        for (const sgn of [-1, 1]) {
+          const cxt = x1 + sgn * laneOff;
+          ctx.moveTo(cxt, y1);
+          ctx.lineTo(cxt - wid, y1 - hgt);
+          ctx.lineTo(cxt + wid, y1 - hgt);
+          ctx.closePath();
+        }
+        ctx.stroke();
+      }
+      ctx.globalAlpha = a;
+      ctx.lineWidth = lw;
+    }
+
     // 金币线
     if (seg.coin >= 0 && w1 > 4) {
       const laneW = ((seg.half - 0.9) * 2) / seg.lanes;
@@ -570,10 +640,13 @@ export function renderWorld(ctx, W, H, game) {
             ? { on: c.changeState === 'moving' || Math.floor(c.signalT * 12) % 2 === 0, side: c.blinkSide }
             : null;
           const dieA = c.dying != null ? clamp(c.dying / 0.7, 0, 1) : 1;
+          // 环岛车不吃 mainlineAlpha：绕岛时主线淡出到 0（中央留给岛盘），
+          // 但环岛车是环岛场景的一部分，跟着主线一起淡掉就等于环岛上没有车（v5.4 实测踩过）。
+          const cA = c.ringDir ? aRing : a;
           items.push({
             key: c.type.key,
             x: lerp(x1, x2, f) + ppiCar * c.x, y: lerp(y1, y2, f),
-            ppm: ppiCar, flip: false, a: a * dieA, z: cz, blink,
+            ppm: ppiCar, flip: false, a: cA * dieA, z: cz, blink,
             car3d: { relYaw: c.smYaw, type: c.type.key },
           });
         }

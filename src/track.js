@@ -9,7 +9,7 @@
 // 5. 长上下坡：hills 用 sin 叠加，相机俯仰随当前段 y 倾斜；新增独享的 upslope/downslope 类型段。
 import { CFG, clamp, lerp } from './config.js';
 
-export const SECTION_DEFS = {
+const SECTION_DEFS = {
   city:    { name: '城市街道', lanes: 3, half: 6.35, rails: true,  lamps: true,  buildings: true, trees: true, bg: 'city' },
   highway: { name: '高速公路', lanes: 4, half: 7.6,  rails: true,  lamps: true,  poles: true, gantry: true, oncoming: true, bg: 'city' },
   scurve:  { name: 'S 弯山道', lanes: 2, half: 5.4,  rails: true,  lamps: false, buildings: false, bg: 'mountain', bends: 2, windmill: true },
@@ -27,6 +27,17 @@ export const SECTION_DEFS = {
   // v4.9 新增：分岔 · 新主干道——走匝道不汇回主道，单车道扩展为 3 车道成为新主干道
   jSplit:  { name: '分岔 · 新主干道', lanes: 3, half: 6.35, rails: true, lamps: true, buildings: true, bg: 'city', split: true,
              junction: [ { dir: 0, label: '直行' }, { dir: 1, label: '新路线' } ] },
+  // v5.6 新增：普通路口 · 仅直行——**唯一出口**，没有岔路可走。
+  // 存在的意义：让「直行通过禁止按左右键」（§10.4 规则 B）真的有场景可触发——
+  // 有岔路时 ←/→ 是合法选道，只有这种「只能直行」的路段乱按方向键才判撞毁。
+  jThrough:{ name: '普通路口 · 仅直行', lanes: 3, half: 6.35, rails: true, lamps: true, buildings: true, bg: 'city', through: true,
+             junction: [ { dir: 0, label: '直行' } ] },
+  // v5 新增：环岛 · 十字路口——两出口（左绕汇回原主线 / 右绕开新主干道），分叉后主线淡出，中央岛盘居中
+  // 说明 1：伪 3D 世界模型 z 单调递增，闭环环形行驶做不出来（见 handoff/2026-10-16-v5环岛路段设计.md §1）
+  // 说明 2：中央岛盘与「直行穿过路口」互斥——主线笔直穿岛，岛就没地方放。故本段取消直行出口，
+  //         主线在环岛区内整体淡出（mainlineAlpha 通道），玩家必经左绕或右绕之一。
+  jRing:   { name: '环岛 · 十字路口', lanes: 3, half: 6.35, rails: true, lamps: true, buildings: true, bg: 'city', ring: true,
+             junction: [ { dir: -1, label: '左绕' }, { dir: 1, label: '右绕' } ] },
 };
 
 // 出口→车道分配（深拷贝防御污染）
@@ -176,8 +187,15 @@ export function buildTrack(seedIn = 20261007) {
     const waitStart = startSeg + BLEND + 10;
     const forkStart = waitStart + waitN;
     const isSplit = !!def.split;
-    const holdN = CFG.splitHoldN, retN = CFG.splitRetN;
-    const rampLen = isSplit ? (rampA + holdN + retN) : (rampA + rampB);
+    const isRing = !!def.ring;                       // v5 环岛：两出口（左绕汇回 / 右绕开新主干道）+ 中央岛
+    // 环岛的弯出段更短：环道只偏 15m，160m 的慢弯会把两车道的环道拉成一条平行长带，
+    // 中央岛永远在屏幕最右边读不出来。100m 短促弯出才像「拐进环岛」。
+    const rampA = isRing ? CFG.ringRampA : CFG.rampSegs;
+    const holdN = isRing ? CFG.ringHoldN : CFG.splitHoldN;
+    const retN = CFG.splitRetN;
+    // 环岛两条匝道长度不同（左绕 = 汇入型 rampB 尾，右绕 = 分岔型 retN 尾）——mergeEnd 取最长那条
+    const rampLen = isRing ? Math.max(rampA + holdN + rampB, rampA + holdN + retN)
+                           : (isSplit ? (rampA + holdN + retN) : (rampA + rampB));
     const mergeEnd = forkStart + rampLen;
     const halfAfter = ((def.lanes - 1) * 3.7) / 2 + 0.8;
 
@@ -189,13 +207,57 @@ export function buildTrack(seedIn = 20261007) {
     for (const e of exits) {
       if (e.dir === 0) continue;
       const startOff = laneCenterFor(def.half, def.lanes, e.dir > 0 ? def.lanes - 1 : 0);
-      const R = isSplit ? CFG.splitDiv : CFG.forkDiv;
-      const n = rampLen;
+      const R = isRing ? CFG.ringDiv : (isSplit ? CFG.splitDiv : CFG.forkDiv);
+      // v5 环岛右绕虽然段本身不是 split 类型，但语义上就是「开新主干道」——收心点瞬时切主线 + 5s 渐入
+      e.split = isSplit || (isRing && e.dir > 0);
+      // 环岛：左绕 = 弯出→绕岛→弯回（汇回原主线）；右绕 = 弯出→绕岛→收心（新主干道）
+      const n = isRing
+        ? (e.dir < 0 ? (rampA + holdN + rampB) : (rampA + holdN + retN))
+        : (isSplit ? (rampA + holdN + retN) : (rampA + rampB));
       const off = new Float64Array(n);
       const crs = new Float64Array(n);
       const halfArr = new Float64Array(n);
       const lanesArr = new Uint8Array(n);
-      if (isSplit) {
+      if (isRing) {
+        // —— v5 环岛绕行段：弯出(rampA) → 绕岛(ringHoldN，持续曲率 + 双车道) → 尾段 ——
+        // 尾段按出口分两种：左绕 R·cos 回到外车道（汇回原主线）；右绕 (|startOff|+R)·cos 收到 0（新主干道）
+        const holdEnd = rampA + holdN;
+        for (let i = 0; i < n; i++) {
+          let mag;
+          if (i < rampA) {
+            const t1 = Math.min(1, i / Math.max(1, rampA - 1));
+            mag = Math.abs(startOff) + R * (1 - Math.cos((Math.PI / 2) * t1));
+          } else if (i < holdEnd) {
+            mag = Math.abs(startOff) + R;                      // 绕岛段：偏移恒定，曲率另给
+          } else {
+            const t3 = Math.min(1, (i - holdEnd) / Math.max(1, n - 1 - holdEnd));
+            mag = e.dir < 0
+              ? Math.abs(startOff) + R * Math.cos((Math.PI / 2) * t3)
+              : (Math.abs(startOff) + R) * Math.cos((Math.PI / 2) * t3);
+          }
+          off[i] = e.dir * mag;
+          const inHold = i >= rampA && i < holdEnd;
+          if (e.dir < 0) {
+            // 左绕：绕岛段双车道，其余单车道；尾段原样汇回
+            halfArr[i] = inHold ? CFG.ringHalf : CFG.rampHalf;
+            lanesArr[i] = inHold ? 2 : 1;
+          } else if (i < holdEnd) {
+            halfArr[i] = i < rampA ? CFG.rampHalf : CFG.ringHalf;
+            lanesArr[i] = i < rampA ? 1 : 2;
+          } else {
+            // 右绕：收心段 2 车道 → 3 车道，ringHalf → def.half（不汇回，成为新主干道）
+            const te = Math.min(1, (i - holdEnd) / Math.max(1, n - 1 - holdEnd));
+            const kk = te * te * (3 - 2 * te);
+            halfArr[i] = CFG.ringHalf + (def.half - CFG.ringHalf) * kk;
+            lanesArr[i] = kk > 0.5 ? def.lanes : 2;
+          }
+        }
+        for (let i = 0; i < n; i++) {
+          crs[i] = (i >= rampA && i < holdEnd)
+            ? e.dir * CFG.ringCurve                                     // 绕岛段持续同向曲率
+            : (off[Math.min(i + 1, n - 1)] - off[i]) / SL;               // 弯出/尾段由偏移导数给
+        }
+      } else if (isSplit) {
         const expStart = rampA + holdN + 20;             // 扩展起点（收心段前 20 段开始扩宽）
         for (let i = 0; i < n; i++) {
           let mag;
@@ -231,10 +293,21 @@ export function buildTrack(seedIn = 20261007) {
         }
         for (let i = 0; i < n; i++) { halfArr[i] = CFG.rampHalf; lanesArr[i] = 1; }
       }
-      for (let i = 0; i < n; i++) {
-        crs[i] = (off[Math.min(i + 1, n - 1)] - off[i]) / SL;
+      // 非环岛匝道：曲率直接取偏移导数（环岛绕岛段的曲率在上面的分支里单独给，不能被这里覆盖）
+      if (!isRing) {
+        for (let i = 0; i < n; i++) {
+          crs[i] = (off[Math.min(i + 1, n - 1)] - off[i]) / SL;
+        }
       }
-      ramps.push({ dir: e.dir, off, crs, halfArr, lanesArr, half: CFG.rampHalf, startOff, n, R, isSplit });
+      // 弯出段最后一段的偏移已经饱和（off[rampA-1] === off[rampA]），差分为 0 →
+      // 强制转向区会在弯还没走完之前提前结束，完成条按剩余路长算永远攒不满 75%
+      // （弯出段越短越明显：环岛 26 段弯出只有 11 段非 grace，必然判「转向力度不足」）。
+      // 把这一段的曲率接回前一段，转向区才是连续的一整段。
+      if (n > 3 && Math.abs(crs[rampA - 1]) < 0.0011 && Math.abs(crs[rampA - 2]) > 0.0011) {
+        crs[rampA - 1] = crs[rampA - 2];
+      }
+      ramps.push({ dir: e.dir, off, crs, halfArr, lanesArr, half: CFG.rampHalf, startOff, n, R, isSplit: e.split,
+                   isRing, holdStart: isRing ? rampA : -1, holdEnd: isRing ? (rampA + holdN) : -1 });
       e.ramp = true;
     }
 
@@ -296,12 +369,45 @@ export function buildTrack(seedIn = 20261007) {
         // v4.9：匝道金币——每 3 段布一枚（密集，奖励选择匝道的玩家）
         if (i >= 6 && i < r.n - 24 && i % 3 === 1) s.coinRamp = r.dir;
         // v4.8：两弧都强制按住方向键——按键方向 = 弧的弯曲方向（crs 符号）
-        if (Math.abs(r.crs[i]) > 0.0011) {
+        // v5 环岛例外：绕岛段（弯出之后的恒定小曲率）不进强制转向区。
+        // 强制转向占着 ←/→，而 ←/→ 同时也是变道键——绕岛段恰恰是玩家要选内圈/外圈的地方，
+        // 强制按住就等于把这个选择锁死了。这段曲率只有 0.006/段，靠离心漂移自然压弯即可。
+        const inRingHold = isRing && i >= rampA && i < rampA + holdN;
+        if (Math.abs(r.crs[i]) > 0.0011 && !inRingHold) {
           const bendDir = r.crs[i] > 0 ? 1 : -1;
-          // grace：第一弧前 RAMP_GRACE 段 + 第二弧（或平直段后收心弧）前 8 段
-          const turnSeg = r.isSplit ? (rampA + holdN) : rampA;
+          // grace：第一弧前 RAMP_GRACE 段 + 第二弧前 8 段
+          // 环岛两条匝道都在「弯出→绕岛」之后才进第二弧，故第二弧起点 = holdEnd
+          const turnSeg = (r.isSplit || r.isRing) ? (rampA + holdN) : rampA;
           const inGrace = i < RAMP_GRACE || (i >= turnSeg && i < turnSeg + 8);
           (s.turnRamp || (s.turnRamp = {}))[r.dir] = { dir: bendDir, half: r.halfArr[i], grace: inGrace };
+        }
+      }
+    }
+    // —— v5 环岛标记段：中央岛盘 / 让行三角 / 斑马线（渲染层 drawRingMarks 消费）——
+    // 只标主线段；匝道走廊另有自己的标记。左绕（dir<0）的岛在主线左侧，右绕在右侧。
+    if (isRing) {
+      for (let i = forkStart - 34; i < forkStart + rampA + holdN + 14; i++) {
+        const s = segs[((i % N) + N) % N];
+        s.ring = 1;                                                        // 环岛影响范围（背景/车流判据）
+        // 人行横道 / 让行三角各只标一段：整条标线在这一段上一次画完（斑马线 4 条 / 让行三角 1 排），
+        // 逐段都画会在近景散成一堆横线，既不像斑马线也不像让行线。
+        if (i === forkStart - 12) s.ringZebra = 1;
+        if (i === forkStart + 4) s.ringYield = 1;
+      }
+      // 中央岛盘：半宽按 sin 包络（近端 0 → 中段 R → 远端 0），逐段存好供渲染层直接用。
+      // 岛尖正对绕岛段起点（rampA + 6 段），最宽处落在玩家前方约 75m——这样玩家是「迎面驶上一座
+      // 土堆再绕过它」，而不是刚拐进环岛时岛就已经在身后了。岛放在太靠后/太靠前都只剩屏幕边缘一条。
+      const iS = forkStart + 2, iE = iS + 34;
+      for (let i = iS; i < iE; i++) {
+        const t = (i - iS) / Math.max(1, iE - 1 - iS);
+        const s = segs[i % N];
+        s.ringIsland = 1;
+        s.ringIslandHalf = CFG.ringIslandR * Math.sin(Math.PI * t);
+        // 岛上绿化：三丛树（中段两侧 + 中间一丛），跟着岛盘偏移
+        if (Math.abs(t - 0.3) < 0.03 || Math.abs(t - 0.5) < 0.03 || Math.abs(t - 0.72) < 0.03) {
+          const side = Math.abs(t - 0.5) < 0.03 ? 0 : (t < 0.5 ? -1 : 1);
+          s.sprites.push({ key: (i % 8 < 4) ? 'tree_a' : 'tree_b',
+                           off: CFG.ringIslandCx + side * CFG.ringIslandR * 0.42, flip: side > 0 });
         }
       }
     }
@@ -317,7 +423,7 @@ export function buildTrack(seedIn = 20261007) {
     const j = { freeChoice: exits.length > 1, exits, ramps,
                 waitStart, forkStart, mergeEnd,
                 waitZ: waitStart * SL, forkZ: forkStart * SL, mergeZ: mergeEnd * SL,
-                split: isSplit, doneZ: mergeEnd * SL,
+                split: isSplit, ring: isRing, doneZ: mergeEnd * SL,
                 chosen: null };
     junctions.push(j);
     sections.push({ type: typeKey, name: def.name, bg: def.bg,
@@ -434,8 +540,9 @@ export function buildTrack(seedIn = 20261007) {
   // —— 序列（按 8 段总长约 6km 排布，每段 ≥1500m 含大桥/隧道/上下坡）——
   let prev = fillSection(0, Math.round(1000 / SL), 'city', { half: 6.35, lanes: 3, rails: true });
   let cur = Math.round(1000 / SL), lastType = 'city', lastSpecialEnd = CFG.firstCurveZ / SL;
-  // 11 段固定序列：保证每圈 3 岔路 + 1 S 弯 + 1 大桥 + 1 沙漠 + 1 隧道 + 1 上坡 + 1 下坡
-  const seq = ['scurve', 'jRS', 'bridge', 'desert', 'tunnel', 'jLS', 'upslope', 'jSplit', 'downslope', 'jLSR', 'highway'];
+  // 12 段固定序列：保证每圈 3 岔路 + 1 单出口路口 + 1 环岛 + 1 S 弯 + 1 大桥 + 1 沙漠 + 1 隧道 + 1 上坡 + 1 下坡
+  // （v5：jSplit 位置换成 jRing——右绕出口本就是「开新主干道」语义，不丢机制，且不增加段落数）
+  const seq = ['scurve', 'jRS', 'bridge', 'desert', 'tunnel', 'jThrough', 'jLS', 'upslope', 'jRing', 'downslope', 'jLSR', 'highway'];
   let seqI = 0;
   while (cur < N - 250) {
     const km = (cur * SL) / 1000;
@@ -444,7 +551,7 @@ export function buildTrack(seedIn = 20261007) {
     seqI++;
     // 弯道低频化只在序列当前位置是 highway/junction/scurve 时不强制
     // 保持场景类型（bridge/tunnel/desert/upslope/downslope）始终出现
-    if (cur < lastSpecialEnd + CFG.curveGapMin / SL && ['jRS','jLS','jLSR','scurve'].includes(type)) {
+    if (cur < lastSpecialEnd + CFG.curveGapMin / SL && ['jRS','jLS','jLSR','jRing','jThrough','scurve'].includes(type)) {
       // 太密才退化为 highway
       type = 'highway';
     }
@@ -453,6 +560,8 @@ export function buildTrack(seedIn = 20261007) {
     const def = SECTION_DEFS[type];
     let lenSeg;
     if (def.junction) lenSeg = Math.round((1100 + rnd() * 500) / SL);   // 岔路 1100-1600m
+    if (def.ring) lenSeg = Math.round((1400 + rnd() * 300) / SL);      // v5 环岛 1400-1700m（两条匝道更长）
+    else if (def.through) lenSeg = Math.round((700 + rnd() * 300) / SL); // v5.6 单出口路口 700-1000m（无匝道，短）
     else if (def.bends) lenSeg = Math.round((900 + rnd() * 400) / SL);    // S 弯
     else if (def.tunnel) lenSeg = Math.round(450 / SL);                    // 隧道
     else if (def.slope) lenSeg = Math.round((700 + rnd() * 300) / SL);     // 上下坡
@@ -474,7 +583,9 @@ export function buildTrack(seedIn = 20261007) {
     const defFinal = SECTION_DEFS[type];
     if (defFinal.junction) {
       prev = fillJunction(cur, lenSeg, type, prev);
-      lastSpecialEnd = cur + BLEND + 10 + waitN + rampA + rampB;
+      // 环岛绕行段更长（rampA + ringHoldN + 尾段），间距判定要按真实占用算
+      lastSpecialEnd = cur + BLEND + 10 + waitN + rampA +
+                       (defFinal.ring ? CFG.ringHoldN + CFG.splitRetN : rampB);
     } else if (defFinal.slope) {
       prev = fillSlope(cur, lenSeg, type, prev);
     } else {
@@ -540,7 +651,25 @@ export function buildTrack(seedIn = 20261007) {
       const u = (z - j.forkZ) / SL;
       const i = clamp(Math.floor(u), 0, r.n - 1);
       const o2 = r.off[Math.min(i + 1, r.n - 1)];
-      return { off: lerp(r.off[i], o2, u - i), cr: r.crs[i], half: r.half };
+      return { off: lerp(r.off[i], o2, u - i), cr: r.crs[i], half: r.half, lanes: r.lanesArr[i] };
+    }
+    return null;
+  }
+  // v5 环岛：当前是否在「绕岛段」，以及玩家跑在环道的内圈还是外圈。
+  // 内圈 = 靠中央岛那一侧（岛在匝道偏移的反方向），外圈 = 靠外缘那一侧。
+  // 供 §4.1「内圈慢外圈快」限速与 HUD 提示共用。
+  function ringLaneAt(zAbs, dir, x) {
+    if (!dir) return null;
+    const z = ((zAbs % L) + L) % L;
+    for (const j of junctions) {
+      if (!j.ring || z < j.forkZ || z >= j.mergeZ) continue;
+      const r = j.ramps.find(rr => rr.dir === dir);
+      if (!r) return null;
+      const i = clamp(Math.floor((z - j.forkZ) / SL), 0, r.n - 1);
+      if (i < r.holdStart || i >= r.holdEnd) return null;      // 只有绕岛段（双车道）才算内/外圈
+      const off = r.off[i];
+      if (x == null) return null;
+      return Math.sign(off) * (x - off) < 0 ? 'inner' : 'outer';
     }
     return null;
   }
@@ -581,5 +710,5 @@ export function buildTrack(seedIn = 20261007) {
   return { segs, length: L, sections, junctions,
            roadInfoAt, laneCenterAt, sectionAt, sectionBlendAt,
            junctionWindowAt, junctionRemovalAt, exitForLane,
-           rampInfoAt, turnAt, effCurveAt, slopeAt, nextJunctionStart };
+           rampInfoAt, ringLaneAt, turnAt, effCurveAt, slopeAt, nextJunctionStart };
 }
